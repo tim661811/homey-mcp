@@ -224,13 +224,19 @@ jobs:
         # configuration would each still publish successfully and simply attach
         # nothing. Read the attestation back so that failure is visible.
         #
-        # Retried because the attestations endpoint can lag the publish by a few
-        # seconds. This runs after the publish, so failing here does not unpublish
+        # Retried because the attestations endpoint lags the publish. Measured on
+        # the 0.1.0 release: fifty seconds was not enough and the check failed on
+        # a release whose attestation did land shortly afterwards, which is the
+        # worst kind of red build because it says the wrong thing about a version
+        # that is already public. Three minutes, and the failure now says the
+        # attestation is not visible YET rather than asserting it is absent.
+        #
+        # This runs after the publish, so failing here does not unpublish
         # anything; it flags that the release needs looking at.
         run: |
           version="$(node -p "require('./package.json').version")"
           url="https://registry.npmjs.org/-/npm/v1/attestations/homey-mcp@${version}"
-          for attempt in 1 2 3 4 5; do
+          for attempt in $(seq 1 12); do
             predicates="$(curl -sfL "${url}" | node -e "
               let raw = '';
               process.stdin.on('data', (chunk) => { raw += chunk; });
@@ -249,9 +255,11 @@ jobs:
                 exit 0
                 ;;
             esac
-            echo "attempt ${attempt}: no provenance yet, waiting"
-            sleep 10
+            echo "attempt ${attempt} of 12: attestation not visible yet, waiting"
+            sleep 15
           done
-          echo "homey-mcp@${version} published without a SLSA provenance attestation" >&2
-          echo "the version is live; check the npm trusted publisher configuration" >&2
+          echo "homey-mcp@${version} has no visible SLSA provenance attestation after three minutes" >&2
+          echo "the version IS live. Check ${url} by hand before assuming it is missing:" >&2
+          echo "the endpoint has been seen to lag, so this may be slowness rather than absence." >&2
+          echo "If it is genuinely absent, check the npm trusted publisher configuration." >&2
           exit 1
