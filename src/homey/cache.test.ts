@@ -11,7 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createHomeCache, flowCardIndexKey } from './cache.js'
+import { createHomeCache, flowCardIndexKey, managerDisplayName } from './cache.js'
 import { createLogger } from '../util/log.js'
 import type { HomeyConnection } from './types.js'
 import {
@@ -19,6 +19,9 @@ import {
   DEVICE_ID,
   DEVICE_NAME,
   DEVICE_URI,
+  MANAGER_NAME_DERIVED,
+  MANAGER_NAME_FROM_HUB,
+  MANAGER_URI,
   ZONE_ID,
   ZONE_NAME,
   ZONE_URI,
@@ -119,7 +122,10 @@ describe('insights log mapping', () => {
 
     const logs = await cache.getInsightsLogs()
 
-    expect([...logs.byId.keys()]).toEqual([`${DEVICE_URI}:measure_temperature`])
+    expect([...logs.byId.keys()]).toEqual([
+      `${DEVICE_URI}:measure_temperature`,
+      `${MANAGER_URI}:temperature`,
+    ])
   })
 
   it('takes the owner id from the owner URI, since the library fills ownerId with the capability', async () => {
@@ -150,6 +156,56 @@ describe('insights log mapping', () => {
     const resolution = await cache.resolveInsightsLog('Hallway sensor Temperature')
 
     expect(resolution.match?.id).toBe('measure_temperature')
+  })
+
+  // Measured on the hub: homey:manager:weather:temperature came back with an
+  // empty ownerName, so the outdoor weather service read exactly like an unnamed
+  // device. A manager is the one owner type neither the device index nor the zone
+  // index can name, and it is where the outdoor temperature lives.
+  describe('an owner that is a manager rather than a device', () => {
+    it('names it from the manager URI, since no index holds a manager', async () => {
+      const { cache } = createCache(libraryPayloads('v2'))
+
+      const log = (await cache.getInsightsLogs()).byId.get(`${MANAGER_URI}:temperature`)
+
+      expect(log?.ownerType).toBe('manager')
+      expect(log?.ownerId).toBe('weather')
+      expect(log?.ownerName).toBe(MANAGER_NAME_DERIVED)
+    })
+
+    it('does the same on V3, which deletes the name just as thoroughly', async () => {
+      const { cache } = createCache(libraryPayloads('v3'), 'v3')
+
+      const log = (await cache.getInsightsLogs()).byId.get(`${MANAGER_URI}:temperature`)
+
+      expect(log?.ownerName).toBe(MANAGER_NAME_DERIVED)
+    })
+
+    it('prefers the hub\'s own name when a raw capture still carries it', async () => {
+      const { cache } = createCache(wirePayloads('v2'))
+
+      const log = (await cache.getInsightsLogs()).byId.get(`${MANAGER_URI}:temperature`)
+
+      // The derived label is the fallback, never an override: where the hub said
+      // "Weer" that is what the household calls it.
+      expect(log?.ownerName).toBe(MANAGER_NAME_FROM_HUB)
+    })
+
+    it('makes a manager-owned log findable by the name it now carries', async () => {
+      const { cache } = createCache(libraryPayloads('v2'))
+
+      const resolution = await cache.resolveInsightsLog('Weather Temperature')
+
+      expect(resolution.match?.uri).toBe(MANAGER_URI)
+    })
+
+    it('renders the hyphenated manager identifiers the hub actually uses', () => {
+      // All four are real owner URIs on the measured hub.
+      expect(managerDisplayName('weather')).toBe('Weather')
+      expect(managerDisplayName('speech-output')).toBe('Speech Output')
+      expect(managerDisplayName('ledring')).toBe('Ledring')
+      expect(managerDisplayName('apps')).toBe('Apps')
+    })
   })
 
   it('maps a V3 item to the same domain shape', async () => {
@@ -255,6 +311,26 @@ describe('flow card mapping', () => {
 
     expect(deviceCard?.ownerName).toBe(DEVICE_NAME)
     expect(deviceCard?.id).toBe(`${DEVICE_URI}:measure_temperature_changed`)
+  })
+
+  // V2 copies the manager's own name out of uriObj, so a manager-owned card is
+  // already named on the measured hub. V3 deletes it like every other owner
+  // name, and there the same derivation the Insights logs use is all there is.
+  it('keeps the manager name V2 supplies rather than deriving over it', async () => {
+    const { cache } = createCache(libraryPayloads('v2'))
+
+    const managerCard = (await cache.getFlowCards('trigger')).all.find((card) => card.ownerType === 'manager')
+
+    expect(managerCard?.ownerName).toBe('Flow')
+  })
+
+  it('names a manager owner from its URI when the dialect deleted the name', async () => {
+    const { cache } = createCache(libraryPayloads('v3'), 'v3')
+
+    const managerCard = (await cache.getFlowCards('trigger')).all.find((card) => card.ownerType === 'manager')
+
+    expect(managerCard?.ownerId).toBe('flow')
+    expect(managerCard?.ownerName).toBe('Flow')
   })
 
   it('never touches a deprecated field, because each read prints a line to the server log', async () => {

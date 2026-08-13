@@ -43,6 +43,7 @@ export function registerDoctorTools(server: McpServer, context: ServerContext): 
         'Reports what is and is not working between this server and your Homey:',
         'which kind of address answered and how it was chosen, which kind of credential source was used (never the credential itself),',
         'the hardware model and firmware, which features this Homey generation actually supports and why,',
+        'whether the official Homey CLI is installed and signed in (which is what decides whether flows can be created),',
         'and how much of the home has been read so far.',
         'Call this when another Homey tool fails, or before reporting a problem.',
         'Every check comes with a concrete next step. Safe to paste into a public issue: no device, zone or household names,',
@@ -138,6 +139,10 @@ async function runDoctorTool(context: ServerContext, options: DoctorOptions): Pr
       addressKind: identity.addressKind,
     },
     capabilities: context.capabilities,
+    // Whether the official CLI is present, and whether it holds a login, decides
+    // whether the flow tools can write at all. The collector already withheld
+    // the install path and the Homey's name for a shared report.
+    homeyCli: report.homeyCli,
     addressProbes: report.addresses.map(summariseAddressProbe),
     inventory: report.inventory,
     cache: context.cache.describe(),

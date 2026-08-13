@@ -33,13 +33,8 @@ and energy arithmetic computed from your Insights history.
 - A **Homey Pro**. Homey Cloud and Homey Bridge have no local API and are not
   supported.
 - **Node 24 or newer** (`homey-api` requires it).
-- The official Homey CLI, to sign in to your Athom account:
-
-```bash
-npm install --global homey
-homey login
-homey select
-```
+- Nothing else. Setup installs the official Homey CLI and signs you in if you want
+  it, and works without it if you do not.
 
 ## Setup
 
@@ -47,9 +42,27 @@ homey select
 npx homey-mcp setup
 ```
 
-It finds your Homey on the network, verifies it can reach it, and prints the exact
-command to register the server with your assistant. No IP addresses to hunt down,
-no JSON to hand-edit.
+It checks Node, looks for the official Homey CLI, offers to install it and walks
+you through signing in and picking a Homey, then connects and reads your Homey's
+identity back before saving anything. Finally it prints the exact command to
+register the server with your assistant. No IP addresses to hunt down, no JSON to
+hand-edit.
+
+Nothing is installed without asking. If you would rather not have the CLI, decline
+and setup uses an Athom Personal Access Token from
+<https://tools.developer.homey.app/me> instead. Everything works on that token
+except creating Flows, which needs the root scope only Athom's own tool is given.
+
+To do the CLI part yourself instead:
+
+```bash
+npm install --global homey
+homey login
+homey select
+```
+
+For an unattended run, `npx homey-mcp setup --yes` accepts those offers up front.
+It will not replace credentials you already have.
 
 For Claude Code:
 

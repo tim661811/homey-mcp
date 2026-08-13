@@ -82,6 +82,20 @@ describe('buildServerInstructions', () => {
     expect(steps[5]).toContain('homey_flow_create')
   })
 
+  // Step 4 is reached straight from step 3, and the two tools once named the
+  // card id differently, so a caller that carried the value over got told a
+  // field it had never been shown was missing. The instructions are read before
+  // either tool description, so they are the first place the shared name has to
+  // hold.
+  it('names the card id the same way in both flow card steps', () => {
+    const steps = build()
+      .split('\n')
+      .filter((line) => /^\d\. /.test(line))
+
+    expect(steps[2]).toContain('"cardId"')
+    expect(steps[3]).toContain('"cardId"')
+  })
+
   // homey_flowcard_autocomplete answers with `choices: [{label, value}]`, so
   // "store the whole object it returns" named the wrapper rather than the thing
   // that goes into the card. The tool's own description was already precise; the

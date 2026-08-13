@@ -935,8 +935,38 @@ export function roundValue(value: number): number {
   return Math.round(value * 1_000_000) / 1_000_000
 }
 
+/** One decimal is enough to keep 288 of 289 buckets away from 100 percent without turning a share into a measurement. */
+const PERCENT_DECIMALS = 1
+
+/**
+ * Renders a share of something as a percentage, rounding towards zero.
+ *
+ * Measured: a last24Hours window on the hub's weather log answered with 288 of
+ * 289 buckets. Rounded to the nearest whole percent that reads as "coverage
+ * 100%", printed beside a window with a hole in it, and a reader who takes the
+ * percentage alone concludes the series is complete. The whole position this
+ * server takes on Insights is that an average without honest coverage is a lie,
+ * so the rounding error is spent in the direction that understates: 99.65 reads
+ * as 99.6, and 100% is printed only when every bucket is genuinely there.
+ *
+ * The bottom of the scale is the same mistake mirrored, so a share that is above
+ * zero but would floor to it reads as "<0.1%" rather than as "0%".
+ *
+ * Only ever called with a share between 0 and 1. A signed change (this window
+ * against the previous one) is a different quantity: rounding it to the nearest
+ * value overstates nothing, since neither direction is the flattering one.
+ */
 export function formatPercent(fraction: number): string {
-  return `${Math.round(fraction * 100)}%`
+  if (!Number.isFinite(fraction)) return 'unknown'
+
+  const percent = fraction * 100
+  const scale = 10 ** PERCENT_DECIMALS
+  // Binary noise is cleared first: 0.58 * 100 is 57.99999999999999, and flooring
+  // that straight away would report a clean 58 percent as 57.9.
+  const floored = Math.floor(roundValue(percent) * scale) / scale
+
+  if (floored === 0 && percent > 0) return `<${1 / scale}%`
+  return `${floored}%`
 }
 
 function asSeriesValue(value: unknown): number | boolean | null {

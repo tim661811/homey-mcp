@@ -29,6 +29,8 @@ import type { ResolvedCredentials } from '../homey/credentials.js'
 import { isSessionExpired, resolveCredentials, storedCredentialsPath } from '../homey/credentials.js'
 import { buildAddressCandidates, probeAddresses } from '../homey/discovery.js'
 import { classifyError } from '../homey/errors.js'
+import { findHomeyCli, HOMEY_CLI_INSTALL_COMMAND, readHomeyCliStoredState } from '../homey/homey-cli.js'
+import type { HomeyCliInstallation, HomeyCliStoredState } from '../homey/homey-cli.js'
 import { detectCapabilities } from '../homey/registry.js'
 import type {
   AddressProbeResult,
@@ -45,9 +47,9 @@ import { asString } from '../util/coerce.js'
 import type { Logger } from '../util/log.js'
 import { createLogger } from '../util/log.js'
 import { readFlagValue } from './flags.js'
+import { MINIMUM_NODE_MAJOR_VERSION } from './node-version.js'
 
-/** The minimum Node this package runs on. `homey-api` declares the same floor. */
-export const MINIMUM_NODE_MAJOR_VERSION = 24
+export { MINIMUM_NODE_MAJOR_VERSION } from './node-version.js'
 
 /**
  * Below this the hub starts killing apps under load.
@@ -86,6 +88,31 @@ export interface DoctorInventory {
   logicVariables: number | null
 }
 
+/**
+ * What the official Homey CLI situation is, as far as reading the filesystem can
+ * tell.
+ *
+ * Nothing here spawns a process. Both doctors report the same facts because both
+ * read the same two things: where the CLI is installed, and what its own
+ * settings file says. `setup` goes further and asks Athom, because a person is
+ * sitting there waiting for the answer; a diagnostic that runs inside a live MCP
+ * server has no business starting subprocesses, and `homey whoami` on a machine
+ * with no stored session opens an interactive login that never returns.
+ */
+export interface DoctorHomeyCli {
+  found: boolean
+  /** Where it was found, in words. Never a filesystem path, so it is safe to share. */
+  where: string | null
+  version: string | null
+  /** Whether the CLI has a stored session. Whether that session still works is what the checks below test. */
+  loggedIn: boolean
+  homeySelected: boolean
+  /** Withheld from a shared report: the name of a Homey is the name of a household. */
+  selectedHomeyName: string | null
+  /** How many Homeys the CLI holds a session for. Two with none selected is the state that needs fixing. */
+  storedHomeyCount: number
+}
+
 export interface DoctorReport {
   generatedAt: string
   serverVersion: string
@@ -99,6 +126,7 @@ export interface DoctorReport {
   hardware: DoctorHardware | null
   capabilities: CapabilityRegistry | null
   inventory: DoctorInventory | null
+  homeyCli: DoctorHomeyCli | null
 }
 
 export interface CollectDoctorReportOptions {
@@ -115,6 +143,11 @@ export interface CollectDoctorReportOptions {
   includeSystem?: boolean
   /** Report the live request queue. Only meaningful inside a running server, so it is off by default. */
   includeQueue?: boolean
+  /**
+   * Report where the official Homey CLI is and what it is signed in to. Reads
+   * two files and spawns nothing, so it is on by default. Defaults to true.
+   */
+  includeHomeyCli?: boolean
   /**
    * Produce a report that is safe to paste in public.
    *
@@ -156,9 +189,20 @@ export async function collectDoctorReport(options: CollectDoctorReportOptions = 
     hardware: null,
     capabilities: null,
     inventory: null,
+    homeyCli: null,
   }
 
   checks.push(checkNodeVersion(forSharing))
+
+  // Before the connection rather than after it, because this is the check that
+  // explains an empty credentials store. Someone who has never set anything up
+  // reads "the Homey CLI is not installed" above the failure to connect, which
+  // is the order the two facts actually relate in.
+  if (options.includeHomeyCli !== false) {
+    const homeyCli = await inspectHomeyCli(environment, logger)
+    report.homeyCli = forSharing ? withheldHomeyCliDetail(homeyCli.report) : homeyCli.report
+    checks.push(homeyCli.check)
+  }
 
   // A connection handed in by the caller has already proved every step below, so
   // the checks that would repeat that work are reported from what the connection
@@ -330,6 +374,20 @@ export function renderDoctorText(report: DoctorReport): string {
             ['language', report.hardware.language === '' ? 'not reported' : report.hardware.language],
           ]),
         },
+    report.homeyCli === null
+      ? null
+      : {
+          heading: 'Homey CLI',
+          lines: renderKeyValueLines([
+            ['installed', report.homeyCli.found ? (report.homeyCli.where ?? 'yes') : 'no'],
+            ['version', report.homeyCli.version ?? 'not readable'],
+            ['signed in', report.homeyCli.loggedIn ? 'yes' : 'no'],
+            [
+              'active Homey',
+              report.homeyCli.homeySelected ? (report.homeyCli.selectedHomeyName ?? 'one is selected') : 'none selected',
+            ],
+          ]),
+        },
     report.addresses.length === 0
       ? null
       : {
@@ -390,6 +448,14 @@ export function renderCompatibilityReport(report: DoctorReport): string {
     )
   } else {
     lines.push('- model: not reached, see the check results below')
+  }
+
+  // Which route the reporter authenticated by decides which code paths their
+  // report exercised, and the CLI route is the only one that can write flows.
+  // The version matters too: the CLI is a moving target this project does not
+  // control. Neither the install path nor the Homey's name appears.
+  if (report.homeyCli !== null) {
+    lines.push(`- Homey CLI: ${describeHomeyCliForSharing(report.homeyCli)}`)
   }
 
   lines.push('', '#### Checks', '')
@@ -455,6 +521,119 @@ function checkNodeVersion(forSharing: boolean): DoctorCheck {
       ? `Install Node ${MINIMUM_NODE_MAJOR_VERSION} or newer and make sure it is the one on your PATH.`
       : `Install Node ${MINIMUM_NODE_MAJOR_VERSION} or newer and make sure it is the one on your PATH. Node was resolved from ${process.execPath}.`,
   }
+}
+
+interface HomeyCliInspection {
+  check: DoctorCheck
+  report: DoctorHomeyCli
+}
+
+/**
+ * Reports the official Homey CLI: whether it is there, where, which version,
+ * whether it holds a login and which Homey it points at.
+ *
+ * Never a failure, whatever it finds. This server runs perfectly well on a
+ * Personal Access Token and `serve` never touches the CLI, so a missing CLI is a
+ * missing capability (creating flows needs the root "homey" scope that Athom
+ * only issues to its own first-party tool) rather than something being broken.
+ *
+ * `findHomeyCli` is called without the npm probe on purpose. Everything this
+ * check does is a file read, which is what makes it safe to run from inside a
+ * live MCP server on every `homey_doctor` call. `setup` turns the probe on,
+ * because there a person is waiting and a wrong "not installed" costs them an
+ * install they did not need.
+ */
+async function inspectHomeyCli(
+  environment: Record<string, string | undefined>,
+  logger: Logger,
+): Promise<HomeyCliInspection> {
+  const installation = await findHomeyCli({ environment, logger: logger.child('homey-cli') })
+  const stored = await readHomeyCliStoredState({ environment })
+
+  const report: DoctorHomeyCli = {
+    found: installation !== null,
+    where: installation?.where ?? null,
+    version: installation?.version ?? null,
+    loggedIn: stored?.hasCloudToken === true,
+    homeySelected: stored?.activeHomeyId !== null && stored?.activeHomeyId !== undefined,
+    selectedHomeyName: stored?.activeHomeyName ?? null,
+    storedHomeyCount: stored?.storedHomeyCount ?? 0,
+  }
+
+  return { report, check: buildHomeyCliCheck(report, installation, stored) }
+}
+
+/**
+ * Turns what was found into the check. Exported so the four states it
+ * distinguishes can be tested without a machine that happens to be in one of
+ * them, the same reason `buildCapabilityChecks` is exported.
+ */
+export function buildHomeyCliCheck(
+  report: DoctorHomeyCli,
+  installation: HomeyCliInstallation | null,
+  stored: HomeyCliStoredState | null,
+): DoctorCheck {
+  const title = 'Homey CLI'
+  const found = installation === null ? null : `Found ${installation.where}${installation.version === null ? '' : `, version ${installation.version}`}.`
+
+  if (installation === null && !report.loggedIn) {
+    return {
+      id: 'homey-cli',
+      title,
+      status: 'warn',
+      // Named in full, because "not on PATH" is the wrong summary: it is also
+      // not in the global npm folder and not in the npx cache, and the last of
+      // those is where it hides on a machine that only ever ran "npx homey".
+      detail:
+        'The official Homey CLI is not on your PATH, not installed globally with npm and not in the npx cache, and it has no stored login here.',
+      fix: `Run "npx homey-mcp setup", which offers to install it and walks through signing in. Or do it yourself: "${HOMEY_CLI_INSTALL_COMMAND}" then "homey login". Without it this server still reads your home through a Personal Access Token, but it cannot create flows: Athom grants the root "homey" scope that flow writes need only to its own first-party tool.`,
+    }
+  }
+
+  if (installation === null) {
+    return {
+      id: 'homey-cli',
+      title,
+      status: 'warn',
+      detail:
+        'A Homey CLI login is stored on this machine, but the CLI itself is no longer on your PATH, in the global npm folder or in the npx cache.',
+      fix: `The stored session still works until it expires, and this server reads it directly. To refresh it later you will need the CLI back: "${HOMEY_CLI_INSTALL_COMMAND}".`,
+    }
+  }
+
+  if (!report.loggedIn) {
+    return {
+      id: 'homey-cli',
+      title,
+      status: 'warn',
+      detail: `${found} Nobody has signed in with it on this machine.`,
+      fix: 'Run "homey login". That session is the only one that can create flows, and this server reads it fresh on every start rather than copying it.',
+    }
+  }
+
+  if (!report.homeySelected) {
+    const knownCount = stored?.storedHomeyCount ?? 0
+    return {
+      id: 'homey-cli',
+      title,
+      status: 'warn',
+      detail: `${found} It has a stored login, but no Homey is selected${knownCount > 1 ? `, and it knows about ${knownCount}` : ''}.`,
+      fix: 'Run "homey select" to choose which Homey this server should talk to. Until one is chosen there is no way to tell which house you mean.',
+    }
+  }
+
+  return {
+    id: 'homey-cli',
+    title,
+    status: 'pass',
+    detail: `${found} It has a stored login and a selected Homey. Whether that session is still valid is what the credentials and connection checks report.`,
+    fix: null,
+  }
+}
+
+/** The Homey's name is the household's name, so a shared report says whether one is selected and not which. */
+function withheldHomeyCliDetail(report: DoctorHomeyCli): DoctorHomeyCli {
+  return { ...report, selectedHomeyName: null }
 }
 
 function checkCredentials(
@@ -1102,6 +1281,22 @@ function describeFlowCount(inventory: DoctorInventory): string {
     ? `${inventory.brokenFlows} broken`
     : 'this Homey does not report which are broken'
   return `${inventory.flows} in total, ${formatCount(inventory.standardFlows)} standard and ${formatCount(inventory.advancedFlows)} advanced; ${brokenPhrase}`
+}
+
+/** One line about the CLI with nothing in it that names a household or a filesystem. */
+function describeHomeyCliForSharing(homeyCli: DoctorHomeyCli): string {
+  if (!homeyCli.found) {
+    return homeyCli.loggedIn
+      ? 'not installed, but a stored login was found'
+      : 'not installed on this machine'
+  }
+
+  return [
+    homeyCli.where ?? 'installed',
+    homeyCli.version === null ? 'version not readable' : `version ${homeyCli.version}`,
+    homeyCli.loggedIn ? 'signed in' : 'not signed in',
+    homeyCli.homeySelected ? 'one Homey selected' : 'no Homey selected',
+  ].join(', ')
 }
 
 function formatCount(value: number | null): string {

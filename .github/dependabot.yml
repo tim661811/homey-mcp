@@ -8,6 +8,13 @@ updates:
     groups:
       development-dependencies:
         dependency-type: development
+    ignore:
+      # @types/node describes the Node major it is numbered after. This project
+      # targets Node 24, so type-checking against a newer major would accept
+      # APIs that do not exist at runtime, and CI would not notice because CI
+      # runs the same mismatch. Raise this deliberately when the Node floor moves.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: github-actions
     directory: /

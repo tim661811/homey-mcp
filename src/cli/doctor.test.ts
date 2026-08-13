@@ -4,8 +4,9 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { collectDoctorReport, renderCompatibilityReport, renderDoctorText } from './doctor.js'
-import type { DoctorReport } from './doctor.js'
+import { buildHomeyCliCheck, collectDoctorReport, renderCompatibilityReport, renderDoctorText } from './doctor.js'
+import type { DoctorHomeyCli, DoctorReport } from './doctor.js'
+import type { HomeyCliInstallation, HomeyCliStoredState } from '../homey/homey-cli.js'
 import type { EntityIndex, HomeCache } from '../homey/cache.js'
 import type { connectToHomey } from '../homey/connect.js'
 import type {
@@ -486,7 +487,143 @@ const REPORT: DoctorReport = {
     insightsLogs: 161,
     logicVariables: 5,
   },
+  homeyCli: {
+    found: true,
+    where: 'in the npx cache',
+    version: '4.4.2',
+    loggedIn: true,
+    homeySelected: true,
+    selectedHomeyName: 'Homey Pro van Aniek',
+    storedHomeyCount: 1,
+  },
 }
+
+describe('the Homey CLI check', () => {
+  const INSTALLED: HomeyCliInstallation = {
+    kind: 'npx_cache',
+    path: '/home/aniek/.npm/_npx/76a0/node_modules/homey/bin/homey.mjs',
+    command: '/opt/node/bin/node',
+    commandArguments: ['/home/aniek/.npm/_npx/76a0/node_modules/homey/bin/homey.mjs'],
+    shell: false,
+    version: '4.4.2',
+    where: 'in the npx cache',
+  }
+
+  function describeState(overrides: Partial<DoctorHomeyCli>): DoctorHomeyCli {
+    return {
+      found: true,
+      where: 'in the npx cache',
+      version: '4.4.2',
+      loggedIn: true,
+      homeySelected: true,
+      selectedHomeyName: 'Upstairs',
+      storedHomeyCount: 1,
+      ...overrides,
+    }
+  }
+
+  function stored(overrides: Partial<HomeyCliStoredState> = {}): HomeyCliStoredState {
+    return {
+      path: CREDENTIAL_PATH,
+      hasCloudToken: true,
+      activeHomeyId: 'homey-one',
+      activeHomeyName: 'Upstairs',
+      storedHomeyCount: 1,
+      ...overrides,
+    }
+  }
+
+  it('passes when the CLI is there, signed in and pointed at a Homey', () => {
+    const check = buildHomeyCliCheck(describeState({}), INSTALLED, stored())
+
+    expect(check.status).toBe('pass')
+    expect(check.detail).toContain('in the npx cache')
+    expect(check.detail).toContain('4.4.2')
+  })
+
+  // A missing CLI is a missing capability, not a broken server: everything
+  // except creating flows works on a Personal Access Token, and `serve` never
+  // touches the CLI at all. Failing here would turn a working setup red.
+  it('never fails, whatever it finds', () => {
+    const states: DoctorHomeyCli[] = [
+      describeState({ found: false, where: null, version: null, loggedIn: false, homeySelected: false }),
+      describeState({ loggedIn: false, homeySelected: false }),
+      describeState({ homeySelected: false, storedHomeyCount: 2 }),
+    ]
+
+    for (const state of states) {
+      const check = buildHomeyCliCheck(state, state.found ? INSTALLED : null, state.loggedIn ? stored() : null)
+      expect(check.status).not.toBe('fail')
+    }
+  })
+
+  // "not on PATH" is the wrong summary and the wrong advice. The CLI is
+  // frequently installed and on no PATH at all, because running it once as
+  // "npx homey" leaves it in the npx cache and nowhere else.
+  it('names all three places it looked, not just PATH', () => {
+    const check = buildHomeyCliCheck(
+      describeState({ found: false, where: null, version: null, loggedIn: false, homeySelected: false }),
+      null,
+      null,
+    )
+
+    expect(check.detail).toContain('PATH')
+    expect(check.detail).toContain('npx cache')
+    expect(check.detail).toContain('globally with npm')
+    expect(check.fix).toContain('npm install --global homey')
+  })
+
+  it('tells someone with a login and no selection to select, not to log in again', () => {
+    const check = buildHomeyCliCheck(
+      describeState({ homeySelected: false, selectedHomeyName: null, storedHomeyCount: 2 }),
+      INSTALLED,
+      stored({ activeHomeyId: null, activeHomeyName: null, storedHomeyCount: 2 }),
+    )
+
+    expect(check.status).toBe('warn')
+    expect(check.detail).toContain('2')
+    expect(check.fix).toContain('homey select')
+  })
+
+  it('keeps a stored login usable when the CLI itself has been removed', () => {
+    const check = buildHomeyCliCheck(
+      describeState({ found: false, where: null, version: null }),
+      null,
+      stored(),
+    )
+
+    expect(check.status).toBe('warn')
+    expect(check.fix).toContain('still works')
+  })
+
+  it('is part of every report, and reads only files so it can run inside the server', async () => {
+    const report = await collectDoctorReport({
+      connection: fakeConnection(),
+      capabilities: CAPABILITIES,
+      cache: fakeCache(),
+      skipInventory: true,
+      includeSystem: false,
+    })
+
+    const check = report.checks.find((entry) => entry.id === 'homey-cli')
+    expect(check).toBeDefined()
+    expect(check?.status).not.toBe('fail')
+    expect(report.homeyCli).not.toBeNull()
+  })
+
+  it('withholds the Homey name from a report meant to be pasted in public', async () => {
+    const report = await collectDoctorReport({
+      connection: fakeConnection(),
+      capabilities: CAPABILITIES,
+      cache: fakeCache(),
+      skipInventory: true,
+      includeSystem: false,
+      forSharing: true,
+    })
+
+    expect(report.homeyCli?.selectedHomeyName).toBeNull()
+  })
+})
 
 describe('renderDoctorText', () => {
   it('prints the line to paste', () => {
@@ -534,7 +671,20 @@ describe('renderCompatibilityReport', () => {
     expect(markdown).not.toContain('homeylocal')
     expect(markdown).not.toContain(CLOUD_ID)
     expect(markdown).not.toContain('Europe/Amsterdam')
-    expect(markdown).not.toContain('Homey CLI')
+    // The credential source description ends in the absolute path of the Homey
+    // CLI's settings file, which carries an account name.
+    expect(markdown).not.toContain(CREDENTIAL_PATH)
+  })
+
+  // The CLI line is here because which route someone authenticated by decides
+  // which code paths their report exercised, and only that route can write
+  // flows. It is also the line most likely to grow a path or a household name by
+  // accident, since everything it describes lives on the reporter's own machine.
+  it('reports the Homey CLI without naming where it lives or which Homey it points at', () => {
+    const markdown = renderCompatibilityReport(REPORT)
+
+    expect(markdown).toContain('- Homey CLI: in the npx cache, version 4.4.2, signed in, one Homey selected')
+    expect(markdown).not.toContain('Homey Pro van Aniek')
   })
 
   // The same bar the homey_doctor tool result is held to. These two reports are

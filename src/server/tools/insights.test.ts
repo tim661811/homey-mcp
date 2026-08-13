@@ -21,6 +21,7 @@ import { registerInsightsTools, scoreLog } from './insights.js'
 const THERMOSTAT_ID = '11111111-1111-4111-8111-111111111111'
 const SENSOR_ID = '22222222-2222-4222-8222-222222222222'
 const SOCKET_ID = '33333333-3333-4333-8333-333333333333'
+const USER_ID = '44444444-4444-4444-8444-444444444444'
 
 const ZONES = [
   { id: 'zone-living', name: 'Woonkamer', parent: null, order: 1, active: true },
@@ -83,6 +84,21 @@ const INSIGHTS_LOGS = [
     titleTrue: null,
     titleFalse: null,
     lastValue: 1004,
+  },
+  // A household member. `homey:user:<uuid>` carries no name anywhere, and no
+  // index this server holds names a user, so this is the owner that stays
+  // nameless after every lookup. The measured hub has two of them.
+  {
+    uri: `homey:user:${USER_ID}`,
+    uriObj: { type: 'user', id: USER_ID, name: null },
+    id: 'asleep',
+    title: 'Slaapt',
+    type: 'boolean',
+    units: null,
+    decimals: null,
+    titleTrue: 'Slaapt',
+    titleFalse: 'Wakker',
+    lastValue: 0,
   },
 ]
 
@@ -227,6 +243,15 @@ function structured(result: CallToolResult): Record<string, unknown> {
   return (result.structuredContent ?? {}) as Record<string, unknown>
 }
 
+/** The human-readable half of a tool result, which is what a model reads first. */
+function renderedText(result: CallToolResult): string {
+  return String(result.content[0]?.type === 'text' ? result.content[0].text : '')
+}
+
+function firstLine(result: CallToolResult): string {
+  return renderedText(result).split('\n')[0] ?? ''
+}
+
 function failure(result: CallToolResult): Record<string, unknown> {
   return (structured(result)['error'] ?? {}) as Record<string, unknown>
 }
@@ -303,7 +328,20 @@ describe('homey_insights_search', () => {
 
     expect(result['returnedCount']).toBe(1)
     expect(result['truncated']).toBe(true)
-    expect(result['totalLogCount']).toBe(4)
+    expect(result['totalLogCount']).toBe(5)
+  })
+
+  it('leaves the owner clause out rather than printing a blank one', async () => {
+    const { tools } = createHarness()
+
+    const result = await callTool(tools, 'homey_insights_search', { query: 'slaapt' })
+    const text = renderedText(result)
+
+    // A trailing "on" with nothing after it is a renderer that lost a name.
+    // Saying nothing is honest, and the log id on the same line still says
+    // whose it is.
+    const candidateLine = text.split('\n').find((line) => line.includes(':asleep'))
+    expect(candidateLine).toBe(`  homey:user:${USER_ID}:asleep  Slaapt`)
   })
 
   it('scores an exact title above a fuzzy near miss', () => {
@@ -349,6 +387,107 @@ describe('homey_insights_query', () => {
     expect((series?.['window'] as Record<string, unknown>)['stepMs']).toBe(300000)
     // Cut in the hub's zone, which is two hours ahead of UTC in August.
     expect((series?.['window'] as Record<string, unknown>)['localStart']).toBe('2026-08-12 10:00 GMT+2')
+  })
+
+  // Measured on the hub: a last24Hours window on a weather log answered with 288
+  // of 289 buckets, and the human-readable line rendered that as "coverage 100%".
+  // The exact counts beside it were all that kept the line from being a lie.
+  describe('the coverage line a reader takes at face value', () => {
+    function entriesWithOneGap(bucketCount: number): Record<string, unknown> {
+      const values = Array.from({ length: bucketCount }, (_unused, index) => ({
+        t: new Date(Date.parse('2026-08-12T08:00:00.000Z') + index * 300000).toISOString(),
+        // The gap sits in the middle rather than at the end, so it cannot be
+        // mistaken for the still-filling final bucket of a live window.
+        v: index === Math.floor(bucketCount / 2) ? null : 21,
+      }))
+      return {
+        values,
+        start: values[0]?.t,
+        end: values[values.length - 1]?.t,
+        step: 300000,
+        lastValue: 21,
+        updatesIn: 120,
+      }
+    }
+
+    it('does not round an incomplete window up to 100 percent', async () => {
+      const { tools } = createHarness({
+        entriesByLogId: {
+          [`homey:device:${SENSOR_ID}:measure_temperature`]: entriesWithOneGap(289),
+        },
+      })
+
+      const result = await callTool(tools, 'homey_insights_query', {
+        logs: [`homey:device:${SENSOR_ID}:measure_temperature`],
+      })
+      const text = renderedText(result)
+
+      expect(text).toContain('coverage 99.6% (288 of 289 buckets)')
+      expect(text).not.toContain('coverage 100%')
+    })
+
+    it('still says 100 percent when every bucket carries a sample', async () => {
+      const { tools } = createHarness({
+        entriesByLogId: {
+          [`homey:device:${SENSOR_ID}:measure_temperature`]: {
+            values: [
+              { t: '2026-08-12T08:00:00.000Z', v: 20 },
+              { t: '2026-08-12T08:05:00.000Z', v: 22 },
+            ],
+            start: '2026-08-12T08:00:00.000Z',
+            end: '2026-08-12T08:05:00.000Z',
+            step: 300000,
+            lastValue: 22,
+            updatesIn: 120,
+          },
+        },
+      })
+
+      const result = await callTool(tools, 'homey_insights_query', {
+        logs: [`homey:device:${SENSOR_ID}:measure_temperature`],
+      })
+      const text = renderedText(result)
+
+      expect(text).toContain('coverage 100% (2 of 2 buckets)')
+    })
+
+    it('does not round a boolean log that was off once up to always on', async () => {
+      const values = Array.from({ length: 200 }, (_unused, index) => ({
+        t: new Date(Date.parse('2026-08-12T08:00:00.000Z') + index * 300000).toISOString(),
+        v: index === 100 ? 0 : 1,
+      }))
+      const { tools } = createHarness({
+        entriesByLogId: {
+          [`homey:device:${SENSOR_ID}:alarm_motion`]: {
+            values,
+            start: values[0]?.t,
+            end: values[values.length - 1]?.t,
+            step: 300000,
+            lastValue: 1,
+            updatesIn: 120,
+          },
+        },
+      })
+
+      const result = await callTool(tools, 'homey_insights_query', {
+        logs: [`homey:device:${SENSOR_ID}:alarm_motion`],
+      })
+      const text = renderedText(result)
+
+      expect(text).toContain('on for 99.5% of the sampled time')
+    })
+  })
+
+  it('names the owner in the header, or says nothing when it has no name', async () => {
+    const { tools } = createHarness()
+
+    const named = await callTool(tools, 'homey_insights_query', {
+      logs: [`homey:device:${SENSOR_ID}:measure_temperature`],
+    })
+    const nameless = await callTool(tools, 'homey_insights_query', { logs: [`homey:user:${USER_ID}:asleep`] })
+
+    expect(firstLine(named)).toBe(`Temperatuur on Sensor (homey:device:${SENSOR_ID}:measure_temperature)`)
+    expect(firstLine(nameless)).toBe(`Slaapt (homey:user:${USER_ID}:asleep)`)
   })
 
   it('stops an unknown resolution before it reaches the hub', async () => {
