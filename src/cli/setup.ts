@@ -6,6 +6,24 @@
 // finding, the verifying and the writing, and ends by printing the one line the
 // user pastes into their assistant.
 //
+// It used to start by assuming the official Homey CLI was already installed and
+// already logged in, which is the one assumption a first-time user cannot
+// satisfy. It now walks that gap itself: find the CLI, offer to install it, run
+// the login, settle which Homey is active, and only then verify by connecting.
+//
+// Two rules govern that walk.
+//
+// NOTHING IS INSTALLED WITHOUT AN EXPLICIT YES. `npm install --global homey`
+// writes outside this project and can need elevated permissions, so it is asked
+// for, the exact command is shown before it runs, and declining is a supported
+// answer rather than a dead end: the npx route needs no global write, and the
+// Personal Access Token route needs no CLI at all.
+//
+// THE PERSONAL ACCESS TOKEN ROUTE IS A FIRST-CLASS PATH, NOT A PUNISHMENT.
+// Anyone who does not want a global npm install, cannot have one, or simply does
+// not want another tool on their machine lands there, and everything except
+// creating flows works exactly the same.
+//
 // Two credential routes exist on this hardware and they are stored very
 // differently, which is the least obvious thing in here.
 //
@@ -36,13 +54,49 @@ import {
 } from '../homey/credentials.js'
 import { buildAddressCandidates, probeAddresses } from '../homey/discovery.js'
 import { classifyError } from '../homey/errors.js'
+import {
+  findHomeyCli,
+  getSelectedHomey,
+  HOMEY_CLI_INSTALL_COMMAND,
+  installHomeyCli,
+  isLoggedIn,
+  npxHomeyCli,
+  readHomeyCliStoredState,
+  runInteractive,
+  selectHomeyWithCli,
+} from '../homey/homey-cli.js'
+import type {
+  CommandRunner,
+  FindHomeyCliOptions,
+  HomeyCliFileSystem,
+  HomeyCliHomey,
+  HomeyCliInstallation,
+  RunHomeyCliOptions,
+} from '../homey/homey-cli.js'
 import { readPackageMetadata } from '../server/createServer.js'
 import type { Logger } from '../util/log.js'
 import { createLogger } from '../util/log.js'
 import { maskSecret } from '../util/redact.js'
+import { checkNodeVersion, MINIMUM_NODE_MAJOR_VERSION } from './node-version.js'
 
 /** Where an Athom account Personal Access Token is created. Printed verbatim so it can be clicked. */
 export const PERSONAL_ACCESS_TOKEN_URL = 'https://tools.developer.homey.app/me'
+
+/**
+ * The machine setup is running on.
+ *
+ * Injected as one object rather than as six unrelated options, and only ever by
+ * tests: the walk below installs software and starts a browser, so it has to be
+ * possible to drive the whole thing against a machine that does not exist.
+ * Everything here defaults to the real one.
+ */
+export interface SetupMachine {
+  fileSystem?: HomeyCliFileSystem
+  runCommand?: CommandRunner
+  homeDirectory?: string
+  platform?: NodeJS.Platform
+  nodeExecutablePath?: string
+}
 
 export interface SetupOptions {
   argv?: string[]
@@ -50,19 +104,80 @@ export interface SetupOptions {
   logger?: Logger
   input?: NodeJS.ReadableStream & { isTTY?: boolean }
   output?: NodeJS.WritableStream
+  machine?: SetupMachine
+}
+
+type Write = (line?: string) => void
+
+/** Everything the two routes need, gathered once so no step has to rebuild it. */
+interface SetupSession {
+  write: Write
+  readlineInterface: ReadlineInterface
+  output: NodeJS.WritableStream
+  logger: Logger
+  environment: Record<string, string | undefined>
+  /** True only on a real terminal. Anything interactive is skipped otherwise rather than hung on. */
+  canPrompt: boolean
+  /**
+   * `--yes` on the command line. Answers the questions that ask permission to
+   * proceed, so an unattended run can consent to installing the CLI.
+   *
+   * Deliberately NOT applied to "replace the credentials you already have?".
+   * Yes is the constructive answer to the first kind of question and a
+   * destructive one to the second, and a single flag must not silently mean
+   * both.
+   */
+  assumeYes: boolean
+  machine: SetupMachine
+}
+
+/** Where to look for the CLI. The npm probe is on: see `ensureHomeyCliPresent`. */
+function lookupOptions(session: SetupSession): FindHomeyCliOptions {
+  return {
+    environment: session.environment,
+    logger: session.logger,
+    probeNpmGlobalRoot: true,
+    ...(session.machine.fileSystem === undefined ? {} : { fileSystem: session.machine.fileSystem }),
+    ...(session.machine.runCommand === undefined ? {} : { runCommand: session.machine.runCommand }),
+    ...(session.machine.platform === undefined ? {} : { platform: session.machine.platform }),
+    ...(session.machine.nodeExecutablePath === undefined
+      ? {}
+      : { nodeExecutablePath: session.machine.nodeExecutablePath }),
+  }
+}
+
+/** How to run it, once found. */
+function runOptions(session: SetupSession): RunHomeyCliOptions {
+  return {
+    environment: session.environment,
+    logger: session.logger,
+    ...(session.machine.runCommand === undefined ? {} : { runCommand: session.machine.runCommand }),
+  }
 }
 
 export async function runSetup(options: SetupOptions = {}): Promise<number> {
   const environment = options.environment ?? process.env
+  const argv = options.argv ?? []
   const input = options.input ?? process.stdin
   const output = options.output ?? process.stdout
   const logger = options.logger ?? createLogger({ scope: 'setup', environment, level: 'error' })
 
-  const write = (line = ''): void => {
+  const write: Write = (line = ''): void => {
     output.write(`${line}\n`)
   }
 
   const readlineInterface = createInterface({ input, output, terminal: input.isTTY === true })
+
+  const session: SetupSession = {
+    write,
+    readlineInterface,
+    output,
+    logger,
+    environment,
+    canPrompt: input.isTTY === true,
+    assumeYes: argv.includes('--yes') || argv.includes('-y'),
+    machine: options.machine ?? {},
+  }
 
   try {
     write()
@@ -70,11 +185,13 @@ export async function runSetup(options: SetupOptions = {}): Promise<number> {
     write('  Connects an AI assistant to your Homey Pro.')
     write()
 
+    if (!reportNodeVersion(write)) return 1
+
     const configPath = storedCredentialsPath({ environment })
     const existing = await readStoredCredentials(configPath)
     if (existing !== null) {
       write(`There are already credentials at ${configPath}.`)
-      const replace = await askYesNo(readlineInterface, 'Replace them and set up again?', false)
+      const replace = await askYesNo(session, 'Replace them and set up again?', false)
       if (!replace) {
         write()
         write('Nothing changed. Run "npx homey-mcp doctor" to check that they still work.')
@@ -83,30 +200,17 @@ export async function runSetup(options: SetupOptions = {}): Promise<number> {
       write()
     }
 
-    const cliSession = await readHomeyCliSession({ environment, logger })
-    if (cliSession !== null) {
-      write('Found a Homey CLI login on this machine.')
-      write(`  file:   ${cliSession.path}`)
-      if (cliSession.homeyId !== null) write(`  homey:  ${cliSession.homeyId}`)
-      if (cliSession.scopes.length > 0) write(`  scopes: ${cliSession.scopes.join(', ')}`)
-      write()
-      write('This is the route that can create Flows: the CLI session carries the root "homey" scope,')
-      write('which Athom does not grant to third-party API clients.')
-      write()
-
-      const useCliSession = await askYesNo(readlineInterface, 'Use this login?', true)
-      write()
-      if (useCliSession) {
-        return await finishWithHomeyCliSession({
-          write,
-          logger,
-          environment,
-          // Credential resolution reads our own file before the CLI's session, so
-          // an old file left in place would silently win over the login the user
-          // just chose. They already agreed to replace it.
-          configPathToDiscard: existing === null ? null : configPath,
-        })
-      }
+    const useCliRoute = await walkHomeyCliRoute(session)
+    if (useCliRoute) {
+      return await finishWithHomeyCliSession({
+        write,
+        logger,
+        environment,
+        // Credential resolution reads our own file before the CLI's session, so
+        // an old file left in place would silently win over the login the user
+        // just chose. They already agreed to replace it.
+        configPathToDiscard: existing === null ? null : configPath,
+      })
     }
 
     return await finishWithPersonalAccessToken({
@@ -116,7 +220,7 @@ export async function runSetup(options: SetupOptions = {}): Promise<number> {
       logger,
       environment,
       configPath,
-      canPrompt: input.isTTY === true,
+      canPrompt: session.canPrompt,
     })
   } catch (error) {
     const failure = classifyError(error, { operation: 'setup' })
@@ -132,8 +236,406 @@ export async function runSetup(options: SetupOptions = {}): Promise<number> {
   }
 }
 
+/**
+ * The Node check, first and out loud.
+ *
+ * The binary already refuses to load anything on an old Node, so reaching this
+ * line means the version is fine. It is still printed, because a setup that
+ * silently skips its first step leaves a user who later hits a version problem
+ * with no idea it was ever looked at.
+ */
+function reportNodeVersion(write: Write): boolean {
+  const verdict = checkNodeVersion()
+  write('Node')
+  if (verdict.satisfied) {
+    write(`  Node ${verdict.version}. This server and the Homey client library both need ${MINIMUM_NODE_MAJOR_VERSION} or newer.`)
+    write()
+    return true
+  }
+
+  write(`  Node ${verdict.version} is too old: ${MINIMUM_NODE_MAJOR_VERSION} or newer is required.`)
+  write(`  This Node came from ${verdict.executablePath}.`)
+  write('  Install a current Node from https://nodejs.org, or with nvm: "nvm install 24 && nvm use 24".')
+  write()
+  return false
+}
+
+// ---------------------------------------------------------------------------
+// The Homey CLI route
+// ---------------------------------------------------------------------------
+
+/**
+ * Walks the whole CLI route and answers one question: can this server be set up
+ * on the Homey CLI's session?
+ *
+ * False is a normal answer, not a failure. It means the Personal Access Token
+ * route is the one to take, whether because the user preferred it, declined an
+ * install, has no terminal to answer prompts in, or hit something that could not
+ * be fixed from here. Every one of those cases prints what it found and what the
+ * next action is before returning.
+ */
+async function walkHomeyCliRoute(session: SetupSession): Promise<boolean> {
+  const { write } = session
+
+  write('The Homey CLI')
+  write('  This is the route that can create Flows. Athom issues the root "homey" scope only to its own')
+  write('  first-party tool, and no third-party API token carries it, so flow writes need this CLI.')
+  write()
+
+  // Asked before anything is installed, because a machine that is already signed
+  // in needs none of the steps below and a user who wants the token route should
+  // not have to decline three questions to get there.
+  const stored = await readHomeyCliStoredState({
+    environment: session.environment,
+    ...(session.machine.homeDirectory === undefined ? {} : { homeDirectory: session.machine.homeDirectory }),
+  })
+  if (stored !== null && stored.hasCloudToken) {
+    write('  A Homey CLI login is already stored on this machine.')
+    write(`  file:         ${stored.path}`)
+    if (stored.activeHomeyName !== null) write(`  active Homey: ${stored.activeHomeyName}`)
+    write()
+
+    const useIt = await askYesNo(session, '  Use this login?', true, session.assumeYes)
+    write()
+
+    if (!useIt) {
+      write('  Continuing with the Personal Access Token route.')
+      write()
+      return false
+    }
+
+    // With a Homey already chosen there is nothing the CLI itself is needed for:
+    // this server reads that settings file directly on every start, so it works
+    // even on a machine where the CLI was later uninstalled.
+    if (stored.activeHomeyId !== null) return true
+
+    write('  No Homey is selected yet, so the CLI is needed to choose one.')
+    write()
+  }
+
+  const installation = await ensureHomeyCliPresent(session)
+  if (installation === null) return false
+
+  const signedIn = await ensureSignedIn(session, installation)
+  if (!signedIn) return false
+
+  return await ensureHomeySelected(session, installation)
+}
+
+/**
+ * Finds the CLI, or offers to put it there.
+ *
+ * The npm probe is turned on here and nowhere else. It costs a subprocess, and
+ * this is the one place where a wrong "not installed" would cost the user an
+ * install they did not need.
+ */
+async function ensureHomeyCliPresent(session: SetupSession): Promise<HomeyCliInstallation | null> {
+  const { write } = session
+
+  const found = await findHomeyCli(lookupOptions(session))
+
+  if (found !== null) {
+    describeInstallation(write, found)
+    return found
+  }
+
+  // Named in full rather than as "not on PATH". The CLI is frequently installed
+  // and on no PATH at all, because running it once as "npx homey" leaves it in
+  // the npx cache and nowhere else, and a PATH-only check calls that machine
+  // unconfigured.
+  write('  Not found: not on your PATH, not installed globally with npm, and not in the npx cache.')
+  write()
+
+  if (!session.canPrompt && !session.assumeYes) {
+    write(`  Nothing is installed without asking, and this terminal cannot ask. To use this route:`)
+    write(`    1. ${HOMEY_CLI_INSTALL_COMMAND}`)
+    write('    2. homey login')
+    write('    3. npx homey-mcp setup')
+    write('  Or pass --yes to allow setup to install it unattended.')
+    write()
+    write('  Continuing with the Personal Access Token route, which needs no CLI.')
+    write()
+    return null
+  }
+
+  const install = await askYesNo(
+    session,
+    `  Install it now with "${HOMEY_CLI_INSTALL_COMMAND}"?`,
+    true,
+    session.assumeYes,
+  )
+  write()
+
+  if (install) {
+    write(`  Running ${HOMEY_CLI_INSTALL_COMMAND}. This can take a minute.`)
+    const result = await installHomeyCli({
+      confirmed: true,
+      environment: session.environment,
+      logger: session.logger,
+      ...(session.machine.platform === undefined ? {} : { platform: session.machine.platform }),
+      ...(session.machine.runCommand === undefined ? {} : { runCommand: session.machine.runCommand }),
+    })
+
+    if (result.installed) {
+      write('  Installed.')
+      const reFound = await findHomeyCli(lookupOptions(session))
+      if (reFound !== null) {
+        describeInstallation(write, reFound)
+        return reFound
+      }
+      write('  npm reported success, but the CLI still cannot be found from here.')
+      write()
+    } else {
+      // npm's own output is not passed through. Forty lines ending in
+      // "EACCES: permission denied, mkdir '/usr/lib/node_modules'" is a true
+      // description of a problem the user cannot act on.
+      for (const line of result.message.split('\n')) write(`  ${line}`)
+      write()
+    }
+  }
+
+  const useNpx = await askYesNo(
+    session,
+    '  Use the CLI through npx instead, without installing anything globally?',
+    true,
+    session.assumeYes,
+  )
+  write()
+
+  if (useNpx) {
+    const installation = npxHomeyCli(
+      session.machine.platform === undefined ? {} : { platform: session.machine.platform },
+    )
+    write('  Using "npx homey". npm downloads it into its own cache when it runs, and nothing is installed')
+    write('  outside that cache. The first command is slower because of the download.')
+    write()
+    return installation
+  }
+
+  write('  Nothing was installed.')
+  write('  Continuing with the Personal Access Token route, which needs no CLI.')
+  write()
+  return null
+}
+
+function describeInstallation(write: Write, installation: HomeyCliInstallation): void {
+  write(`  Found ${installation.where}${installation.version === null ? '' : `, version ${installation.version}`}.`)
+  if (installation.path !== null) write(`  path: ${installation.path}`)
+  write()
+}
+
+/**
+ * Makes sure the CLI holds a login, running the real one when it does not.
+ *
+ * The login is spawned with this process's own stdin, stdout and stderr, so the
+ * user answers Athom's prompts directly. Nothing here scrapes the exchange or
+ * touches the credential: the whole reason for using the official tool is that
+ * the official tool owns it.
+ */
+async function ensureSignedIn(session: SetupSession, installation: HomeyCliInstallation): Promise<boolean> {
+  const { write } = session
+
+  write('Signing in')
+  let state = await isLoggedIn(installation, {
+    ...runOptions(session),
+    confirmWithAthom: true,
+    ...(session.machine.homeDirectory === undefined ? {} : { homeDirectory: session.machine.homeDirectory }),
+  })
+
+  if (state.loggedIn) {
+    write(`  ${state.account === null ? 'Already signed in.' : `Already signed in as ${state.account}.`}`)
+    write()
+    return true
+  }
+
+  write(`  ${state.detail}`)
+  write()
+
+  if (!session.canPrompt) {
+    // "homey login" opens a browser and waits for a person. Starting it where
+    // nobody can answer would hang until the timeout and achieve nothing.
+    write('  Signing in is interactive, and this terminal cannot prompt.')
+    write('  Run "homey login" in a terminal, then run setup again.')
+    write()
+    write('  Continuing with the Personal Access Token route.')
+    write()
+    return false
+  }
+
+  if (session.assumeYes) {
+    // --yes means "do not stop to ask me", and it is right for an install, which
+    // is deterministic and finishes on its own. Signing in is the opposite: it
+    // opens a browser and waits for a person to be there. Auto-consenting to
+    // that on someone's behalf is how an unattended run ends up throwing a login
+    // page in the face of whoever happens to be at the machine, which is exactly
+    // what it did once. An unattended run cannot complete an OAuth flow anyway,
+    // so there is nothing to gain and a real surprise to lose.
+    write('  Signing in opens a browser and waits for you, so --yes does not do it for you.')
+    write('  Run "homey login" yourself, then run setup again.')
+    write()
+    write('  Continuing with the Personal Access Token route.')
+    write()
+    return false
+  }
+
+  const runLogin = await askYesNo(session, '  Run "homey login" now?', true, false)
+  write()
+
+  if (!runLogin) {
+    write('  Skipped. Run "homey login" whenever you want this route.')
+    write()
+    write('  Continuing with the Personal Access Token route.')
+    write()
+    return false
+  }
+
+  write('  Starting "homey login". It opens a browser and waits for you there.')
+  write('  Everything below this line comes from Athom\'s own tool.')
+  write()
+
+  const result = await runInteractive(installation, ['login'], runOptions(session))
+
+  write()
+  if (result.outcome !== 'completed' || result.exitCode !== 0) {
+    write(`  ${result.message}`)
+    write('  Run "homey login" yourself to see what it says, then run setup again.')
+    write()
+    write('  Continuing with the Personal Access Token route.')
+    write()
+    return false
+  }
+
+  state = await isLoggedIn(installation, {
+    ...runOptions(session),
+    confirmWithAthom: true,
+    ...(session.machine.homeDirectory === undefined ? {} : { homeDirectory: session.machine.homeDirectory }),
+  })
+
+  if (!state.loggedIn) {
+    write(`  The login command finished, but there is still no usable session. ${state.detail}`)
+    write()
+    write('  Continuing with the Personal Access Token route.')
+    write()
+    return false
+  }
+
+  write(`  ${state.account === null ? 'Signed in.' : `Signed in as ${state.account}.`}`)
+  write()
+  return true
+}
+
+/**
+ * Settles which Homey the CLI is pointed at.
+ *
+ * An account with two Homeys and none selected is a real state rather than a
+ * crash: `homey select current` prints a bare null and exits 0, and everything
+ * downstream then has no way to tell which house is meant.
+ */
+async function ensureHomeySelected(session: SetupSession, installation: HomeyCliInstallation): Promise<boolean> {
+  const { write } = session
+
+  write('Choosing a Homey')
+  const selection = await getSelectedHomey(installation, runOptions(session))
+
+  if (selection.status === 'selected' && selection.selected !== null) {
+    write(`  ${describeHomey(selection.selected)} is selected.`)
+    write()
+    return true
+  }
+
+  if (selection.status === 'none_available') {
+    write('  This Athom account has no Homey on it.')
+    write('  Sign in to the Homey app with the account that owns your Homey, then run setup again.')
+    write()
+    return false
+  }
+
+  if (selection.status === 'unknown') {
+    write(`  ${selection.detail}`)
+    write('  Run "homey list" yourself to see what it says.')
+    write()
+    write('  Continuing with the Personal Access Token route.')
+    write()
+    return false
+  }
+
+  const chosen = await chooseHomey(session, selection.available)
+  if (chosen === null) return false
+
+  const result = await selectHomeyWithCli(installation, chosen.id, runOptions(session))
+
+  if (result.outcome !== 'completed' || result.exitCode !== 0) {
+    write(`  ${result.message}`)
+    write(`  Run "homey select" yourself, then run setup again.`)
+    write()
+    write('  Continuing with the Personal Access Token route.')
+    write()
+    return false
+  }
+
+  write(`  ${describeHomey(chosen)} is now selected.`)
+  write()
+  return true
+}
+
+async function chooseHomey(session: SetupSession, available: HomeyCliHomey[]): Promise<HomeyCliHomey | null> {
+  const { write } = session
+  const only = available[0]
+
+  if (available.length === 1 && only !== undefined) {
+    write(`  No Homey is selected. This account has exactly one: ${describeHomey(only)}.`)
+    const select = await askYesNo(session, '  Select it?', true, session.assumeYes)
+    write()
+    if (select) return only
+    write('  Nothing selected.')
+    write()
+    write('  Continuing with the Personal Access Token route.')
+    write()
+    return null
+  }
+
+  write(`  No Homey is selected, and this account has ${available.length}:`)
+  available.forEach((homey, index) => {
+    write(`    ${index + 1}. ${describeHomey(homey)}`)
+  })
+  write()
+
+  if (!session.canPrompt) {
+    write('  This terminal cannot ask which one you mean.')
+    write('  Run "homey select" in a terminal, then run setup again.')
+    write()
+    write('  Continuing with the Personal Access Token route.')
+    write()
+    return null
+  }
+
+  for (;;) {
+    const answer = (await session.readlineInterface.question(`  Which one? [1-${available.length}] `)).trim()
+    const chosenIndex = Number.parseInt(answer, 10)
+    const chosen = Number.isNaN(chosenIndex) ? undefined : available[chosenIndex - 1]
+    if (chosen !== undefined) {
+      write()
+      return chosen
+    }
+    write(`  Please answer with a number between 1 and ${available.length}.`)
+  }
+}
+
+function describeHomey(homey: HomeyCliHomey): string {
+  const name = homey.name ?? homey.id
+  const details = [
+    homey.softwareVersion === null ? null : `firmware ${homey.softwareVersion}`,
+    homey.state === null ? null : homey.state,
+  ].filter((entry): entry is string => entry !== null)
+  return details.length === 0 ? name : `${name} (${details.join(', ')})`
+}
+
+// ---------------------------------------------------------------------------
+// Finishing
+// ---------------------------------------------------------------------------
+
 interface FinishWithCliSessionOptions {
-  write: (line?: string) => void
+  write: Write
   logger: Logger
   environment: Record<string, string | undefined>
   /** An older credentials file the user agreed to replace, which must not be left to win. */
@@ -152,7 +654,24 @@ async function finishWithHomeyCliSession(options: FinishWithCliSessionOptions): 
     options.write()
   }
 
-  options.write('Checking that it can reach your Homey...')
+  // Read for its scope list, which is what proves this session can write flows.
+  // It throws when the CLI holds sessions for several Homeys and none is
+  // active, a state the selection step above has already settled, so a failure
+  // here is worth reporting rather than swallowing.
+  const cliSession = await readHomeyCliSession({ environment: options.environment, logger: options.logger })
+  if (cliSession !== null) {
+    options.write('Checking the connection')
+    options.write(`  session file: ${cliSession.path}`)
+    if (cliSession.scopes.length > 0) options.write(`  scopes:       ${cliSession.scopes.join(', ')}`)
+    if (!cliSession.scopes.includes('homey') && cliSession.scopes.length > 0) {
+      options.write('  This session does not carry the root "homey" scope, so creating flows will be refused.')
+      options.write('  Run "homey login" again to get one that does.')
+    }
+  } else {
+    options.write('Checking the connection')
+  }
+
+  options.write('  Connecting to your Homey and reading its identity back...')
   const identity = await verifyCredentials({ environment: options.environment, logger: options.logger })
   reportIdentity(options.write, identity)
 
@@ -168,7 +687,7 @@ async function finishWithHomeyCliSession(options: FinishWithCliSessionOptions): 
 
 interface FinishWithTokenOptions {
   readlineInterface: ReadlineInterface
-  write: (line?: string) => void
+  write: Write
   output: NodeJS.WritableStream
   logger: Logger
   environment: Record<string, string | undefined>
@@ -183,8 +702,11 @@ async function finishWithPersonalAccessToken(options: FinishWithTokenOptions): P
 
   let personalAccessToken = tokenFromEnvironment
 
+  options.write('Personal Access Token')
+
   if (personalAccessToken === null) {
-    options.write('This server needs an Athom Personal Access Token.')
+    options.write('  This route reads your whole home, its sensor history and its energy use. It cannot create')
+    options.write('  flows, because Athom withholds that scope from tokens like this one.')
     options.write()
     options.write('  1. Open this page and sign in with your Athom account:')
     options.write(`       ${PERSONAL_ACCESS_TOKEN_URL}`)
@@ -193,17 +715,17 @@ async function finishWithPersonalAccessToken(options: FinishWithTokenOptions): P
     options.write()
 
     if (!options.canPrompt) {
-      options.write('This terminal cannot prompt for input, so setup cannot continue here.')
+      options.write('  This terminal cannot prompt for input, so setup cannot continue here.')
       options.write()
-      options.write(`Run setup again in an interactive terminal, or set ${PERSONAL_ACCESS_TOKEN_ENVIRONMENT_VARIABLE}`)
-      options.write('in the environment and run it again.')
+      options.write(`  Run setup again in an interactive terminal, or set ${PERSONAL_ACCESS_TOKEN_ENVIRONMENT_VARIABLE}`)
+      options.write('  in the environment and run it again.')
       return 1
     }
 
-    personalAccessToken = await askSecret(options.readlineInterface, options.output, 'Personal Access Token: ')
+    personalAccessToken = await askSecret(options.readlineInterface, options.output, '  Personal Access Token: ')
     options.write()
   } else {
-    options.write(`Using the token from ${PERSONAL_ACCESS_TOKEN_ENVIRONMENT_VARIABLE}.`)
+    options.write(`  Using the token from ${PERSONAL_ACCESS_TOKEN_ENVIRONMENT_VARIABLE}.`)
     options.write()
   }
 
@@ -236,7 +758,8 @@ async function finishWithPersonalAccessToken(options: FinishWithTokenOptions): P
     localSecureAddress: selected.localUrlSecure,
   }
 
-  options.write('Checking that it can reach your Homey...')
+  options.write('Checking the connection')
+  options.write('  Connecting to your Homey and reading its identity back...')
   const identity = await verifyCredentials({
     environment: options.environment,
     logger: options.logger,
@@ -307,7 +830,7 @@ async function verifyCredentials(options: VerifyCredentialsOptions): Promise<Ver
   }
 }
 
-function reportIdentity(write: (line?: string) => void, identity: VerifiedIdentity): void {
+function reportIdentity(write: Write, identity: VerifiedIdentity): void {
   write()
   write(`Connected to "${identity.name}".`)
   write(`  model:     ${identity.modelName}`)
@@ -367,7 +890,7 @@ async function listCloudHomeys(athomToken: string): Promise<CloudHomey[]> {
 
 async function selectHomey(
   readlineInterface: ReadlineInterface,
-  write: (line?: string) => void,
+  write: Write,
   homeys: CloudHomey[],
   canPrompt: boolean,
 ): Promise<CloudHomey> {
@@ -396,7 +919,7 @@ async function selectHomey(
   }
 }
 
-async function reportAddresses(write: (line?: string) => void, homey: CloudHomey): Promise<void> {
+async function reportAddresses(write: Write, homey: CloudHomey): Promise<void> {
   const candidates = buildAddressCandidates({
     localAddress: homey.localUrl,
     localSecureAddress: homey.localUrlSecure,
@@ -428,7 +951,7 @@ async function reportAddresses(write: (line?: string) => void, homey: CloudHomey
   }
 }
 
-function printClientInstructions(write: (line?: string) => void): void {
+function printClientInstructions(write: Write): void {
   const packageName = readPackageMetadata().name
 
   write('Add it to Claude Code with exactly this line:')
@@ -445,14 +968,41 @@ function printClientInstructions(write: (line?: string) => void): void {
   write()
 }
 
+/**
+ * Asks a yes or no question.
+ *
+ * `assumeYes` comes from `--yes` and only ever answers questions where yes is
+ * the constructive answer. The one destructive question setup asks, whether to
+ * replace credentials that already work, does not pass it.
+ *
+ * A question is never put to a terminal that cannot answer it. Measured:
+ * `readline`'s `question` on an input stream that has already ended does not
+ * resolve, does not reject and does not time out, so asking anyway is not a
+ * defensive default, it is a hang. `setup` piped into anything, or run from a
+ * process manager, would have stopped there forever.
+ */
 async function askYesNo(
-  readlineInterface: ReadlineInterface,
+  session: SetupSession,
   question: string,
   defaultAnswer: boolean,
+  assumeYes = false,
 ): Promise<boolean> {
+  // Both answers below are printed with the reason they were taken. A run whose
+  // transcript silently skips the questions leaves whoever reads it later unable
+  // to tell which decisions were made on their behalf.
+  if (assumeYes) {
+    session.write(`${question} yes, because --yes was given.`)
+    return true
+  }
+
+  if (!session.canPrompt) {
+    session.write(`${question} ${defaultAnswer ? 'yes' : 'no'}, the default: there is no terminal to ask.`)
+    return defaultAnswer
+  }
+
   const suffix = defaultAnswer ? '[Y/n]' : '[y/N]'
   for (;;) {
-    const answer = (await readlineInterface.question(`${question} ${suffix} `)).trim().toLowerCase()
+    const answer = (await session.readlineInterface.question(`${question} ${suffix} `)).trim().toLowerCase()
     if (answer === '') return defaultAnswer
     if (answer === 'y' || answer === 'yes') return true
     if (answer === 'n' || answer === 'no') return false

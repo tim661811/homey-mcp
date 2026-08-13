@@ -114,7 +114,7 @@ export function buildServerInstructions(options: BuildServerInstructionsOptions)
       'Building an automation, in the order that works:',
       '1. Find the devices involved with "homey_devices_search", so you are holding real ids.',
       '2. Search for cards with "homey_flowcards_search". Flow cards come from the apps installed on this particular Homey, so the catalogue is different on every hub and there are hundreds of them. Never assume a card exists because it exists elsewhere.',
-      '3. Call "homey_flowcard_describe" on each card you intend to use. That is what tells you its arguments, which of them are required, and which tokens it publishes for later cards to use.',
+      '3. Call "homey_flowcard_describe" on each card you intend to use, passing the card id as "cardId". That is what tells you its arguments, which of them are required, and which tokens it publishes for later cards to use.',
       // Two mistakes were being invited here. "Any argument the card marks as an
       // autocomplete" left out `device`-typed arguments, which need exactly the
       // same treatment and which homey_flow_validate rejects when they are sent
@@ -124,7 +124,12 @@ export function buildServerInstructions(options: BuildServerInstructionsOptions)
       // wrong thing: what goes into the card is the whole `value` of the chosen
       // entry, and a model that stored the choice wrapper instead would write a
       // card the app cannot render.
-      '4. Resolve every argument whose "resolveWith" is not null, which covers "autocomplete" and "device" arguments alike: a device argument needs the same treatment as an autocomplete one, and "homey_flow_validate" rejects a bare device id. Call "homey_flowcard_autocomplete", pick a choice, and store that choice\'s whole "value" object as the argument value, not just its id.',
+      //
+      // "the same cardId" is spelled out because this is the step a caller
+      // arrives at straight from homey_flowcard_describe, and the two tools once
+      // named that value differently. Saying it carries over closes the seam in
+      // the one place a model reads before either tool description.
+      '4. Resolve every argument whose "resolveWith" is not null, which covers "autocomplete" and "device" arguments alike: a device argument needs the same treatment as an autocomplete one, and "homey_flow_validate" rejects a bare device id. Call "homey_flowcard_autocomplete" with the same "cardId" and the argument name, pick a choice, and store that choice\'s whole "value" object as the argument value, not just its id.',
       '5. Check the whole thing with "homey_flow_validate" before writing anything. It is a client-side check that costs nothing and catches the mistakes this firmware reports with misleading messages.',
       '6. Create it with "homey_flow_create". A new flow is created disabled and in a folder named "AI", so nothing starts running the house the moment it is written. Tell the user where to find it and that they must enable it themselves.',
     ].join('\n'),

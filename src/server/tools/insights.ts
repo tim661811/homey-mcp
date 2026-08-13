@@ -27,6 +27,7 @@ import {
   describeWindow,
   editDistance,
   fetchInsightsSeries,
+  formatPercent,
   isValidTimezone,
   sampleSeriesEvenly,
   summariseSeries,
@@ -144,7 +145,9 @@ export function registerInsightsTools(server: McpServer, context: ServerContext)
                 `${scored.length} log${scored.length === 1 ? '' : 's'} match${scored.length === 1 ? 'es' : ''}${query === '' ? '' : ` "${query}"`}, showing ${candidates.length}. Pass a logId to homey_insights_query.`,
                 ...candidates.map(
                   (candidate) =>
-                    `  ${candidate.logId}  ${candidate.title}${candidate.units === null ? '' : ` (${candidate.units})`} on ${candidate.ownerName}${candidate.zoneName === null ? '' : ` in ${candidate.zoneName}`}`,
+                    // Same rule as the query renderer: an owner this server
+                    // cannot name is left unsaid rather than printed as a blank.
+                    `  ${candidate.logId}  ${candidate.title}${candidate.units === null ? '' : ` (${candidate.units})`}${candidate.ownerName === '' ? '' : ` on ${candidate.ownerName}`}${candidate.zoneName === null ? '' : ` in ${candidate.zoneName}`}`,
                 ),
               ]
 
@@ -363,13 +366,20 @@ async function querySingleSeries(
 function renderSeriesText(result: SeriesResult): string {
   const unit = result.units === null ? '' : ` ${result.units}`
   const lines: string[] = [
-    `${result.title} on ${result.ownerName} (${result.logId})`,
+    // A user-owned log is the one owner the cache still cannot name, and the
+    // clause is dropped rather than printed empty: "Asleep on  (homey:user:...)"
+    // reads as a name the renderer lost, which is worse than not claiming one.
+    `${result.title}${result.ownerName === '' ? '' : ` on ${result.ownerName}`} (${result.logId})`,
     `  window ${result.window.localStart ?? result.window.start} to ${result.window.localEnd ?? result.window.end}, step ${Math.round(result.window.stepMs / 1000)} s`,
   ]
 
   const coverage = result.statistics.coverage
+  // Rendered from the fraction through the one shared formatter, which rounds
+  // towards zero. A second rounding rule here is what printed "coverage 100%"
+  // next to "(288 of 289 buckets)": the counts were the only thing keeping the
+  // line honest, and a model that reads the percentage alone never saw them.
   lines.push(
-    `  coverage ${coverage.percent === null ? 'unknown' : `${Math.round(coverage.percent)}%`} (${coverage.presentCount} of ${coverage.bucketCount} buckets)`,
+    `  coverage ${coverage.fraction === null ? 'unknown' : formatPercent(coverage.fraction)} (${coverage.presentCount} of ${coverage.bucketCount} buckets)`,
   )
 
   const numeric = result.statistics.numeric
@@ -382,7 +392,7 @@ function renderSeriesText(result: SeriesResult): string {
   const booleanStatistics = result.statistics.boolean
   if (booleanStatistics !== null && booleanStatistics.count > 0) {
     lines.push(
-      `  on for ${booleanStatistics.dutyCycle === null ? 'unknown' : `${Math.round(booleanStatistics.dutyCycle * 100)}%`} of the sampled time, ${booleanStatistics.transitionCount} change${booleanStatistics.transitionCount === 1 ? '' : 's'}, now ${booleanStatistics.last === null ? 'unknown' : booleanStatistics.last ? 'on' : 'off'}`,
+      `  on for ${booleanStatistics.dutyCycle === null ? 'unknown' : formatPercent(booleanStatistics.dutyCycle)} of the sampled time, ${booleanStatistics.transitionCount} change${booleanStatistics.transitionCount === 1 ? '' : 's'}, now ${booleanStatistics.last === null ? 'unknown' : booleanStatistics.last ? 'on' : 'off'}`,
     )
   }
 

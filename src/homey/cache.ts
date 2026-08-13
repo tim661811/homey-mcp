@@ -600,18 +600,63 @@ export function createOwnerNameLookup(
 const EMPTY_OWNER_NAMES: OwnerNameLookup = { deviceNameById: new Map(), zoneNameById: new Map() }
 
 /**
- * The owner's display name, for the two owner types this server already holds.
+ * The owner's display name, for every owner type that can be named at all.
  *
- * A card or log owned by a manager or an app cannot be named from here, and is
- * left empty rather than filled with its id: `weather` is an identifier, not the
- * name "Weer" that the owner sees in the app, and printing one as the other
- * would put a word in the hub's mouth.
+ * Devices and zones come from the two indexes this cache already holds. A
+ * manager is named from its own URI instead, because no index holds managers and
+ * nothing else on the item survives to name one.
+ *
+ * Two owner types are deliberately left unnamed, because neither one can be
+ * named from what is in hand:
+ *
+ *   - An app id is a reverse-DNS identifier (`nu.baretta.openweathermap`), which
+ *     is not a name in any language, so the only route to the real one is the app
+ *     list. On the measured hub no Insights log is app-owned (the per-app CPU and
+ *     memory logs belong to `homey:manager:apps`), and all 31 app-owned flow
+ *     cards are named by V2 out of the object it deletes, so nothing is empty
+ *     here today. V3 deletes that name and cannot be tested on this hardware, so
+ *     it is left alone rather than fixed blind.
+ *   - A user URI is `homey:user:<uuid>`, which carries no name at all. The two
+ *     user-owned logs on the measured hub (`asleep` and `present`) therefore stay
+ *     empty. Naming them would take a request to the users manager and would put
+ *     a household member's name into tool output, so it is a decision to make
+ *     deliberately rather than a gap to close in passing.
  */
 function resolveOwnerName(ownerType: string, ownerId: string, owners: OwnerNameLookup): string | null {
   if (ownerId === '') return null
   if (ownerType === 'device') return owners.deviceNameById.get(ownerId) ?? null
   if (ownerType === 'zone') return owners.zoneNameById.get(ownerId) ?? null
+  if (ownerType === 'manager') return managerDisplayName(ownerId)
   return null
+}
+
+/**
+ * A readable label for a manager, derived from the manager's own identifier.
+ *
+ * Measured: `homey:manager:weather:temperature` came back with an empty
+ * ownerName, so the hub's outdoor weather service was presented exactly like an
+ * unnamed device and a model could not tell whose temperature it was reading.
+ * The manager URI carries the manager's name inside it, so no request is needed
+ * to turn `weather` into "Weather" or `speech-output` into "Speech Output".
+ *
+ * The hub does have a better name: it sends `uriObj.name` ("Weer" on a Dutch
+ * household), and where that survives transformGet it is preferred over this,
+ * which is why every mapper reads the library's own field first and only falls
+ * back to here. What it does not have is a route to that name on its own. The
+ * only place the hub repeats it is the flow card catalogue, and reaching for
+ * that to name an Insights log would mean three list requests and 617 KB on a
+ * hub that rate limits after four rapid calls, to answer a question about a
+ * different collection. The derived label is good enough because a manager
+ * identifier is a real English word chosen by Athom rather than an opaque key:
+ * it tells a reader which service this is, and the exact identifier is still
+ * carried alongside as `ownerId` for anyone who needs to match on it.
+ */
+export function managerDisplayName(managerId: string): string {
+  return managerId
+    .split(/[-_]/)
+    .filter((word) => word !== '')
+    .map((word) => `${word.slice(0, 1).toUpperCase()}${word.slice(1)}`)
+    .join(' ')
 }
 
 /** Collections arrive as an object keyed by id, card lists as an array. Both end up as entries. */

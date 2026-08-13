@@ -91,6 +91,20 @@ export const DEVICE_NAME = 'Hallway sensor'
 export const ZONE_NAME = 'Hallway'
 
 /**
+ * A manager-owned Insights log, which is the owner type no index can name.
+ *
+ * The hub really does keep outdoor weather as `homey:manager:weather`, so a log
+ * owned by a manager is not an exotic case: it is where the outdoor temperature
+ * lives, sitting in the same search results as every device-owned one.
+ */
+export const MANAGER_URI = 'homey:manager:weather'
+export const MANAGER_ID = 'weather'
+/** What the hub calls that manager, in the household's own language. */
+export const MANAGER_NAME_FROM_HUB = 'Weer'
+/** What the manager identifier reads as once it is rendered for a person. */
+export const MANAGER_NAME_DERIVED = 'Weather'
+
+/**
  * The card that exists as both a trigger and an action.
  *
  * `homey:manager:flow:programmatic_trigger` is "this Flow has started" in the
@@ -289,6 +303,12 @@ function insightsLogPayloads(dialect: Dialect): Record<string, unknown> {
         uriObj: { type: 'device', id: DEVICE_ID, name: DEVICE_NAME, iconObj: null },
         id: 'measure_temperature',
       },
+      temperature: {
+        ...shared,
+        uri: MANAGER_URI,
+        uriObj: { type: 'manager', id: MANAGER_ID, name: MANAGER_NAME_FROM_HUB, iconObj: null },
+        id: 'temperature',
+      },
     }
   }
 
@@ -299,6 +319,13 @@ function insightsLogPayloads(dialect: Dialect): Record<string, unknown> {
       ownerUri: DEVICE_URI,
       ownerId: DEVICE_ID,
       ownerName: DEVICE_NAME,
+    },
+    [`${MANAGER_URI}:temperature`]: {
+      ...shared,
+      id: `${MANAGER_URI}:temperature`,
+      ownerUri: MANAGER_URI,
+      ownerId: MANAGER_ID,
+      ownerName: MANAGER_NAME_FROM_HUB,
     },
   }
 }

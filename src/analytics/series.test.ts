@@ -18,6 +18,7 @@ import {
   compareStatistics,
   describeWindow,
   fetchInsightsSeries,
+  formatPercent,
   isInsightsResolution,
   measureCoverage,
   normaliseSeries,
@@ -294,6 +295,43 @@ describe('numeric statistics', () => {
 
   it('measures coverage over an empty window without dividing by zero', () => {
     expect(measureCoverage(buildSeries([])).fraction).toBeNull()
+  })
+})
+
+// Measured on the hub: a last24Hours window on homey:manager:weather:temperature
+// returned 288 of 289 buckets. Rounding that to the nearest whole percent printed
+// "coverage 100%" beside a window with a hole in it, and a reader who takes the
+// percentage alone concludes the series is complete.
+describe('rendering a share as a percentage', () => {
+  it('never reports a window with a gap in it as 100 percent', () => {
+    expect(formatPercent(288 / 289)).toBe('99.6%')
+    expect(formatPercent(0.99999)).not.toBe('100%')
+  })
+
+  it('reserves 100 percent for a window that really is complete', () => {
+    expect(formatPercent(1)).toBe('100%')
+    expect(formatPercent(289 / 289)).toBe('100%')
+  })
+
+  it('leaves a clean share clean rather than shaving a decimal off binary noise', () => {
+    // 0.58 * 100 is 57.99999999999999 in binary floating point, and flooring
+    // that straight away would report a clean 58 percent as 57.9.
+    expect(formatPercent(0.58)).toBe('58%')
+    expect(formatPercent(0.75)).toBe('75%')
+    expect(formatPercent(0.6)).toBe('60%')
+    expect(formatPercent(0.25)).toBe('25%')
+  })
+
+  it('rounds towards zero, so the error is always on the honest side', () => {
+    expect(formatPercent(0.4599)).toBe('45.9%')
+    expect(formatPercent(0.12345)).toBe('12.3%')
+  })
+
+  // The mirror image of the same mistake: a window that carries one sample in
+  // ten thousand is not a window that carries none.
+  it('distinguishes a very small share from no share at all', () => {
+    expect(formatPercent(1 / 10_000)).toBe('<0.1%')
+    expect(formatPercent(0)).toBe('0%')
   })
 })
 

@@ -9,6 +9,11 @@
 // A model finds a card through these three tools or it does not find it at
 // all, so their descriptions are written for a reader who has never seen a
 // Homey.
+//
+// They are also read in sequence, so one concept keeps one name across all
+// three. A card id is `cardId` everywhere it is an input, because a caller
+// carries it straight from one tool to the next and a rename in between is a
+// failed call, not a style preference.
 
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
@@ -157,18 +162,26 @@ export function registerFlowCardTools(server: McpServer, context: ServerContext)
         'Call this for each card before building a flow. Guessing an argument name produces a flow that saves and then does nothing.',
       ].join(' '),
       inputSchema: {
-        id: z.string().describe('The full card id from homey_flowcards_search, for example homey:manager:notifications:create_notification.'),
+        // Named `cardId` rather than `id` so that the whole card-discovery
+        // surface asks for this one value under one name. It used to be `id`
+        // here and `cardId` on homey_flowcard_autocomplete, and a caller moving
+        // from one to the other passed the name it had just used and got
+        // "expected string, received undefined at cardId", which names a field
+        // it had never been shown. `cardId` is the survivor of the two because
+        // these tools also take a kind and an argument name, so a bare `id`
+        // does not say which id is meant.
+        cardId: z.string().describe('The full card id from homey_flowcards_search, for example homey:manager:notifications:create_notification.'),
         kind: z
           .enum(CARD_KINDS)
           .optional()
-          .describe('Which meaning of the id you want, when one id names cards of more than one kind. Omit to be told about all of them.'),
+          .describe('Which meaning of the card id you want, when one id names cards of more than one kind. Omit to be told about all of them.'),
       },
       annotations: READ_ONLY_TOOL_ANNOTATIONS,
     },
     async (input): Promise<CallToolResult> => {
       try {
         const index = await context.cache.getAllFlowCards()
-        const cardId = input.id.trim()
+        const cardId = input.cardId.trim()
         // Every kind carrying this id, because an id names one card per kind and
         // not one card. homey:manager:flow:programmatic_trigger is both the
         // trigger "this Flow has started" and the action "start a Flow", and
@@ -179,7 +192,7 @@ export function registerFlowCardTools(server: McpServer, context: ServerContext)
           : [index.get(input.kind, cardId)].filter((card): card is FlowCardDescriptor => card !== undefined)
 
         if (matches.length === 0) {
-          throw new HomeyMcpError('not_found', `This Homey has no ${input.kind ?? 'flow'} card "${input.id}".`, {
+          throw new HomeyMcpError('not_found', `This Homey has no ${input.kind ?? 'flow'} card "${cardId}".`, {
             suggestion: 'Find the right id with homey_flowcards_search. Card ids are case sensitive and always start with homey:.',
           })
         }
@@ -211,11 +224,11 @@ export function registerFlowCardTools(server: McpServer, context: ServerContext)
         'Store the WHOLE object of the chosen result as the argument value. Cards keep app-specific fields next to the id and the name, for example a Google Cast action stores the host and description alongside them, and rebuilding the object by hand loses those and breaks the card.',
       ].join(' '),
       inputSchema: {
-        cardId: z.string().describe('The full card id, for example homey:app:com.google.cast:tts.'),
+        cardId: z.string().describe('The full card id from homey_flowcards_search or homey_flowcard_describe, for example homey:app:com.google.cast:tts.'),
         kind: z
           .enum(CARD_KINDS)
           .optional()
-          .describe('Which meaning of the id you want, for the few ids that name a card of more than one kind. Only needed when the tool asks for it.'),
+          .describe('Which meaning of the card id you want, for the few ids that name a card of more than one kind. Only needed when the tool asks for it.'),
         argument: z.string().describe('The name of the argument to resolve, taken from homey_flowcard_describe.'),
         query: z.string().optional().describe('What to search for. An empty string lists everything the argument accepts.'),
         args: z
@@ -235,7 +248,7 @@ export function registerFlowCardTools(server: McpServer, context: ServerContext)
           : [index.get(input.kind, cardId)].filter((entry): entry is FlowCardDescriptor => entry !== undefined)
 
         if (matches.length === 0) {
-          throw new HomeyMcpError('not_found', `This Homey has no ${input.kind ?? 'flow'} card "${input.cardId}".`, {
+          throw new HomeyMcpError('not_found', `This Homey has no ${input.kind ?? 'flow'} card "${cardId}".`, {
             suggestion: 'Find the right id with homey_flowcards_search.',
           })
         }

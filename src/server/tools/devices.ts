@@ -463,7 +463,14 @@ function registerFlowStart(server: McpServer, context: ServerContext): void {
           flow.kind === 'advanced' ? 'flow.triggerAdvancedFlow' : 'flow.triggerFlow',
         )
 
-        // triggerCount moves on every start, so the cached flow list is stale.
+        // Starting a flow can change anything it touches, so the cached view of
+        // the flows is no longer trustworthy.
+        //
+        // Measured, and worth recording because it is the obvious thing to check:
+        // `triggerCount` does NOT move when a flow is started this way. It counts
+        // the flow's own trigger firing, not a programmatic start, so it cannot be
+        // used to confirm that a start actually ran. Read an effect the flow has
+        // instead.
         context.cache.invalidate('flows')
 
         const disabledNote = flow.enabled

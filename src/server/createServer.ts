@@ -112,7 +112,10 @@ export async function createServer(options: CreateServerOptions): Promise<Create
   const server = new McpServer(
     {
       name: 'homey-mcp',
-      title: 'Homey Bridge (unofficial)',
+      // Not "Homey Bridge": that is the name of an actual Athom product, and a
+      // third-party server presenting itself under it would mislead users and
+      // trade on a trademark. Name the project, and say plainly it is not theirs.
+      title: 'Homey MCP (unofficial)',
       version: options.version ?? readPackageMetadata().version,
     },
     {

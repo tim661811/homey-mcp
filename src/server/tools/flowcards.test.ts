@@ -48,7 +48,7 @@ const CAPABILITY_REGISTRY: CapabilityRegistry = {
 type ToolHandler = (args: Record<string, unknown>) => Promise<CallToolResult>
 
 interface RegisteredTestTool {
-  config: { annotations?: Record<string, unknown> }
+  config: { annotations?: Record<string, unknown>; inputSchema?: Record<string, unknown> }
   handler: ToolHandler
 }
 
@@ -176,6 +176,23 @@ describe('registration', () => {
 
     for (const tool of harness.tools.values()) {
       expect(tool.config.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, openWorldHint: false })
+    }
+  })
+
+  // These tools are used in sequence, so a caller carries the card id straight
+  // from homey_flowcard_describe into homey_flowcard_autocomplete. While
+  // describe called it `id` and autocomplete called it `cardId`, doing exactly
+  // that failed with "expected string, received undefined at cardId", naming a
+  // field the caller had never been shown. It happened on the first real
+  // attempt against the hub, so the shared name is asserted rather than left to
+  // whoever edits one tool next.
+  it('asks for the card id under one name on every tool that takes one', () => {
+    const harness = createHarness()
+
+    for (const name of ['homey_flowcard_describe', 'homey_flowcard_autocomplete']) {
+      const schemaKeys = Object.keys(takeTool(harness, name).config.inputSchema ?? {})
+      expect(schemaKeys).toContain('cardId')
+      expect(schemaKeys).not.toContain('id')
     }
   })
 })
@@ -314,7 +331,7 @@ describe('homey_flowcard_describe', () => {
   it('returns the full argument schema, including the range a card enforces', async () => {
     const harness = createHarness()
     const result = await takeTool(harness, 'homey_flowcard_describe').handler({
-      id: 'homey:device:aaaaaaaa-0002-4000-8000-000000000002:target_temperature_set',
+      cardId: 'homey:device:aaaaaaaa-0002-4000-8000-000000000002:target_temperature_set',
     })
 
     const card = structuredOf(result)['card'] as Record<string, unknown>
@@ -324,7 +341,7 @@ describe('homey_flowcard_describe', () => {
 
   it('says how to fill an autocomplete argument rather than leaving the model to guess', async () => {
     const harness = createHarness()
-    const result = await takeTool(harness, 'homey_flowcard_describe').handler({ id: 'homey:app:com.example.cast:tts' })
+    const result = await takeTool(harness, 'homey_flowcard_describe').handler({ cardId: 'homey:app:com.example.cast:tts' })
 
     const card = structuredOf(result)['card'] as Record<string, unknown>
     const args = card['args'] as Array<Record<string, unknown>>
@@ -333,7 +350,7 @@ describe('homey_flowcard_describe', () => {
 
   it('reports the tokens a card emits in BOTH dialects, since mixing them is the classic mistake', async () => {
     const harness = createHarness()
-    const result = await takeTool(harness, 'homey_flowcard_describe').handler({ id: 'homey:manager:cron:time_exactly' })
+    const result = await takeTool(harness, 'homey_flowcard_describe').handler({ cardId: 'homey:manager:cron:time_exactly' })
 
     const card = structuredOf(result)['card'] as Record<string, unknown>
     const tokens = card['emitsTokens'] as Array<Record<string, unknown>>
@@ -361,7 +378,7 @@ describe('homey_flowcard_describe', () => {
       ],
     })
 
-    const result = await takeTool(harness, 'homey_flowcard_describe').handler({ id: 'homey:app:com.example.http:get' })
+    const result = await takeTool(harness, 'homey_flowcard_describe').handler({ cardId: 'homey:app:com.example.http:get' })
 
     const card = structuredOf(result)['card'] as Record<string, unknown>
     const tokens = card['emitsTokens'] as Array<Record<string, unknown>>
@@ -391,7 +408,7 @@ describe('homey_flowcard_describe', () => {
       ],
     })
 
-    const result = await takeTool(harness, 'homey_flowcard_describe').handler({ id: 'homey:manager:util:http_advanced' })
+    const result = await takeTool(harness, 'homey_flowcard_describe').handler({ cardId: 'homey:manager:util:http_advanced' })
 
     const card = structuredOf(result)['card'] as Record<string, unknown>
     const tokens = card['emitsTokens'] as Array<Record<string, unknown>>
@@ -417,7 +434,7 @@ describe('homey_flowcard_describe', () => {
     })
 
     const result = await takeTool(harness, 'homey_flowcard_describe').handler({
-      id: 'homey:app:com.example.sensor:reading_above',
+      cardId: 'homey:app:com.example.sensor:reading_above',
     })
 
     const card = structuredOf(result)['card'] as Record<string, unknown>
@@ -448,7 +465,7 @@ describe('homey_flowcard_describe', () => {
     })
 
     const result = await takeTool(harness, 'homey_flowcard_describe').handler({
-      id: 'homey:app:com.example.sensor:reading_above',
+      cardId: 'homey:app:com.example.sensor:reading_above',
     })
 
     const card = structuredOf(result)['card'] as Record<string, unknown>
@@ -462,7 +479,7 @@ describe('homey_flowcard_describe', () => {
 
   it('normalises the boolean droptoken this firmware sends into the same shape as the newer array', async () => {
     const harness = createHarness()
-    const result = await takeTool(harness, 'homey_flowcard_describe').handler({ id: 'homey:manager:logic:lt' })
+    const result = await takeTool(harness, 'homey_flowcard_describe').handler({ cardId: 'homey:manager:logic:lt' })
 
     const card = structuredOf(result)['card'] as Record<string, unknown>
     expect(card['acceptedDropTokenTypes']).toEqual(['any'])
@@ -471,7 +488,7 @@ describe('homey_flowcard_describe', () => {
   it('reports a card that supports a duration', async () => {
     const harness = createHarness()
     const result = await takeTool(harness, 'homey_flowcard_describe').handler({
-      id: 'homey:device:aaaaaaaa-0001-4000-8000-000000000001:onoff',
+      cardId: 'homey:device:aaaaaaaa-0001-4000-8000-000000000001:onoff',
     })
 
     expect((structuredOf(result)['card'] as Record<string, unknown>)['supportsDuration']).toBe(true)
@@ -479,7 +496,7 @@ describe('homey_flowcard_describe', () => {
 
   it('fails cleanly on a card id that does not exist', async () => {
     const harness = createHarness()
-    const result = await takeTool(harness, 'homey_flowcard_describe').handler({ id: 'homey:app:com.example.missing:x' })
+    const result = await takeTool(harness, 'homey_flowcard_describe').handler({ cardId: 'homey:app:com.example.missing:x' })
 
     expect(result.isError).toBe(true)
   })
@@ -489,7 +506,7 @@ describe('homey_flowcard_describe', () => {
     // started" and the action "Start a Flow". Answering with only one of them,
     // whichever was indexed last, sent the model off to build the wrong card.
     const harness = createHarness()
-    const result = await takeTool(harness, 'homey_flowcard_describe').handler({ id: 'homey:manager:flow:programmatic_trigger' })
+    const result = await takeTool(harness, 'homey_flowcard_describe').handler({ cardId: 'homey:manager:flow:programmatic_trigger' })
 
     const cards = structuredOf(result)['cards'] as Array<Record<string, unknown>>
     expect(cards.map((card) => card['kind']).sort()).toEqual(['action', 'trigger'])
@@ -521,7 +538,7 @@ describe('homey_flowcard_describe', () => {
       flowCardActions: dual('Flip the switch'),
     })
 
-    const result = await takeTool(harness, 'homey_flowcard_describe').handler({ id: 'homey:app:com.example.dual:x' })
+    const result = await takeTool(harness, 'homey_flowcard_describe').handler({ cardId: 'homey:app:com.example.dual:x' })
 
     const card = structuredOf(result)['card'] as Record<string, unknown>
     expect(card['kind']).toBe('action')
@@ -536,7 +553,7 @@ describe('homey_flowcard_describe', () => {
     // the summary, so a reader is never left wondering which of the two they
     // are looking at.
     const harness = createHarness()
-    const result = await takeTool(harness, 'homey_flowcard_describe').handler({ id: 'homey:manager:flow:programmatic_trigger' })
+    const result = await takeTool(harness, 'homey_flowcard_describe').handler({ cardId: 'homey:manager:flow:programmatic_trigger' })
 
     const card = structuredOf(result)['card'] as Record<string, unknown>
     expect(card['kind']).toBe('trigger')
@@ -546,7 +563,7 @@ describe('homey_flowcard_describe', () => {
   it('describes the one kind that was asked for', async () => {
     const harness = createHarness()
     const result = await takeTool(harness, 'homey_flowcard_describe').handler({
-      id: 'homey:manager:flow:programmatic_trigger',
+      cardId: 'homey:manager:flow:programmatic_trigger',
       kind: 'trigger',
     })
 
