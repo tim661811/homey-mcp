@@ -57,6 +57,10 @@ export function buildServerInstructions(options: BuildServerInstructionsOptions)
   const advancedFlow = capabilityOutlook(capabilities, 'advancedFlow', capabilities.hardware.advancedFlow)
   const energyReports = capabilityOutlook(capabilities, 'energyReports', capabilities.hardware.energyReports)
   const moods = capabilityOutlook(capabilities, 'moods', capabilities.hardware.moods)
+  // Weather has no `hardware` flag: nothing outside its own tool branches on it,
+  // so `false` here only ever means "no probe was recorded", which
+  // `capabilityOutlook` reports as unknown rather than as missing.
+  const weather = capabilityOutlook(capabilities, 'weather', false)
 
   const sections: string[] = []
 
@@ -82,6 +86,11 @@ export function buildServerInstructions(options: BuildServerInstructionsOptions)
         'Historical energy reports',
         energyReports,
         describeEnergyFallback(insights),
+      ),
+      renderCapabilityLine(
+        'Outdoor weather (the reading Homey itself uses for the home\'s location)',
+        weather,
+        'nothing here can say what it is like outside, so compare rooms against each other rather than against outdoors',
       ),
       renderMoodsLine(moods),
     ].join('\n'),

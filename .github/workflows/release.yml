@@ -1,0 +1,257 @@
+name: Release
+
+# Publishing homey-mcp to npm. There is no npm token anywhere in this repository
+# and there should never be one: the publish job proves its identity to the
+# registry with a short-lived GitHub OIDC token instead (npm calls this "trusted
+# publishing"). Two consequences worth knowing before editing this file:
+#
+#   1. The npm side of the trust is pinned to this file's NAME. Renaming
+#      release.yml, renaming the repository, or renaming the GitHub owner all
+#      break publishing, and the error npm returns is a bare 404 that reads like
+#      a missing package rather than a configuration mismatch. See RELEASING.md.
+#   2. Because the credential is minted per run rather than stored, anything that
+#      can run this workflow can publish. That is why the publish job sits behind
+#      an environment whose deployment rule only admits v* tags.
+#
+# The one-time setup (npm trust, the environment, and the manual bootstrap
+# publish that npm's own chicken-and-egg forces) is documented in RELEASING.md.
+
+on:
+  release:
+    types: [published]
+
+# Nothing is granted at the workflow level, so a job that says nothing gets
+# nothing. Each job below asks for exactly the scopes it needs.
+permissions: {}
+
+# Re-publishing an edited draft fires this event a second time. Queue those runs
+# rather than overlapping them. Cancelling is deliberately not an option here:
+# interrupting a run midway between "npm publish succeeded" and "provenance
+# verified" would leave a released version whose attestation nobody checked.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Everything that executes repository or dependency code runs here, in a job
+  # that holds no publishing credential at all. Splitting it out this way means a
+  # malicious dependency in the tree cannot reach an OIDC token, because the job
+  # that could mint one never runs npm test.
+  #
+  # A release is also the one moment where shipping something broken is
+  # expensive, so this runs the full check set rather than trusting that main was
+  # green: a GitHub Release can be cut from any commit, including one that never
+  # went through the required checks on a pull request.
+  verify:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the release tag
+        # Pinned by commit SHA rather than by tag. ci.yml uses the floating @v7,
+        # which is a fair trade there; it is not one in a workflow whose other
+        # job holds a publishing credential, because a tag can be repointed at
+        # new code by whoever controls the action repository. Dependabot's
+        # github-actions ecosystem updates SHA pins and their comments too.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing in this job pushes, so leave no git credential on disk for
+          # test or build code to find.
+          persist-credentials: false
+
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # 24 is the floor the package declares in engines, because homey-api
+          # requires it. Deliberately not the lts/* half of ci.yml's matrix: this
+          # job's purpose is to check what actually ships, and what ships is
+          # built by the publish job on 24.
+          node-version: '24'
+
+      - name: Confirm the release tag and package.json agree
+        # The tag names what a human decided to release and is what the release
+        # notes hang off. package.json is what actually goes inside the tarball.
+        # When they disagree, the version people install is not the version the
+        # notes describe, and nobody can find that version in the history.
+        #
+        # This deliberately fails instead of correcting either side. Rewriting
+        # package.json here would publish a version that exists in no commit,
+        # which would make the provenance attestation point at a tree that does
+        # not contain what was shipped.
+        #
+        # It lives in this job rather than next to npm publish so that a mistyped
+        # tag fails in seconds, before the environment gate is reached. The
+        # publish job cannot run unless this job passed, so this is a real gate
+        # on publishing and not merely advisory.
+        #
+        # GITHUB_REF_NAME is read as an environment variable rather than through
+        # ${{ }} interpolation, so its contents can never be spliced into the
+        # script as shell.
+        run: |
+          case "${GITHUB_REF_NAME}" in
+            v[0-9]*) ;;
+            *)
+              echo "release tag ${GITHUB_REF_NAME} is not of the form v<version>" >&2
+              exit 1
+              ;;
+          esac
+          tag_version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          if [ "${tag_version}" != "${package_version}" ]; then
+            echo "tag ${GITHUB_REF_NAME} implies ${tag_version} but package.json says ${package_version}" >&2
+            echo "bump package.json in a commit and re-tag; do not edit either one here" >&2
+            exit 1
+          fi
+          echo "releasing homey-mcp@${package_version}"
+
+      - name: Scan for credentials and household data
+        # The same scan as the pre-commit hook and as ci.yml, run over the exact
+        # tree being released. It comes before npm ci because it imports only
+        # node: builtins, so it needs no dependencies installed. Running it first
+        # means the scan gates the release without any third-party code having
+        # executed on the runner yet.
+        run: node scripts/check-secrets.mjs
+
+      - name: Install dependencies
+        # --ignore-scripts stops dependency install hooks from running. Verified
+        # against this lockfile: typecheck, test and build all pass without them.
+        # It also skips this repository's own prepare hook, which only points git
+        # at .githooks and is meaningless on a throwaway runner.
+        run: npm ci --ignore-scripts
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - name: Build
+        # Not a duplicate of the build inside the publish job. This one proves
+        # the tagged tree compiles before the environment gate is reached; the
+        # publish job builds again because dist/ is gitignored, so the directory
+        # that actually ships has to be produced by the job that ships it.
+        run: npm run build
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+
+    # npm's trusted publisher can pin the owner, the repository and this
+    # workflow's filename, but it has no field for a branch or a tag. Registry
+    # side, any run of release.yml in this repository on any ref would satisfy
+    # the trust. This environment supplies the missing constraint: configure it
+    # with Deployment branches and tags set to "Selected branches and tags" and a
+    # single rule of ref type Tag and pattern v*, then record the same
+    # environment name in the npm trusted publisher so npm rejects a run that did
+    # not pass through it.
+    #
+    # It must hold no secrets. The moment an NPM_TOKEN is added here "as a
+    # fallback", this workflow quietly has a long-lived publishing credential
+    # again and the whole design above is decoration.
+    environment: npm-publish
+
+    permissions:
+      # Mints the OIDC token npm exchanges for a short-lived publish credential.
+      # The same token is what Sigstore signs the provenance attestation with, so
+      # this single scope covers both.
+      id-token: write
+      # Reading the tagged tree is the only thing this job does to the repository.
+      contents: read
+
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # Pinned to 24 rather than lts/*. Trusted publishing needs npm 11.5.1
+          # or newer and only Node 24 and above bundle one; Node 22 is still an
+          # active LTS line shipping npm 10.9.x, so lts/* is a moving target that
+          # would one day resolve to an npm that cannot publish this way at all.
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          # setup-node turns npm caching on by itself once package.json declares
+          # a packageManager field. A restored cache is attacker-influenceable
+          # input, and this is the one job holding a publishing credential, so
+          # keep it off explicitly rather than relying on that field's absence.
+          package-manager-cache: false
+
+      - name: Confirm npm is new enough for trusted publishing
+        # Node 24 bundles a sufficient npm today, but the bundled version moves
+        # with Node patch releases. Assert it, so a regression fails here with a
+        # readable message rather than at publish time with an opaque 404.
+        run: |
+          installed="$(npm --version)"
+          required="11.5.1"
+          if [ "$(printf '%s\n%s\n' "${required}" "${installed}" | sort -V | head -n1)" != "${required}" ]; then
+            echo "npm ${installed} is older than ${required}, which trusted publishing requires" >&2
+            exit 1
+          fi
+          echo "npm ${installed}"
+
+      - name: Install dependencies
+        # --ignore-scripts matters more here than in the verify job: it keeps
+        # dependency install hooks from executing alongside a live publishing
+        # credential. It does not affect prepublishOnly, which npm publish runs
+        # separately in the step below.
+        run: npm ci --ignore-scripts
+
+      - name: Publish to npm
+        # No token and no NODE_AUTH_TOKEN. setup-node v7 stopped writing a dummy
+        # one, and OIDC publishing does not read it in any case.
+        #
+        # --provenance is absent on purpose: under trusted publishing npm attaches
+        # the attestation automatically, and the next step proves it did.
+        #
+        # --access public is redundant for an unscoped package, which is public by
+        # default, but it is stated anyway because npm refuses to generate
+        # provenance for a package it cannot confirm is public. Saying so directly
+        # skips that visibility lookup rather than letting a failed lookup turn
+        # into a refusal to attest.
+        #
+        # package.json's prepublishOnly runs typecheck, test and build here, which
+        # is what produces the gitignored dist/ that the files list ships. Never
+        # add --ignore-scripts to this line: it would skip prepublishOnly and
+        # publish a tarball whose dist/ was never generated.
+        run: npm publish --access public
+
+      - name: Confirm the published version carries provenance
+        # Provenance being automatic means its absence is silent. A repository
+        # flipped private, a package flipped private, or a drifted trust
+        # configuration would each still publish successfully and simply attach
+        # nothing. Read the attestation back so that failure is visible.
+        #
+        # Retried because the attestations endpoint can lag the publish by a few
+        # seconds. This runs after the publish, so failing here does not unpublish
+        # anything; it flags that the release needs looking at.
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          url="https://registry.npmjs.org/-/npm/v1/attestations/homey-mcp@${version}"
+          for attempt in 1 2 3 4 5; do
+            predicates="$(curl -sfL "${url}" | node -e "
+              let raw = '';
+              process.stdin.on('data', (chunk) => { raw += chunk; });
+              process.stdin.on('end', () => {
+                try {
+                  const bundle = JSON.parse(raw);
+                  console.log(bundle.attestations.map((attestation) => attestation.predicateType).join(' '));
+                } catch {
+                  console.log('');
+                }
+              });
+            " || true)"
+            case "${predicates}" in
+              *slsa.dev/provenance*)
+                echo "provenance attestation present: ${predicates}"
+                exit 0
+                ;;
+            esac
+            echo "attempt ${attempt}: no provenance yet, waiting"
+            sleep 10
+          done
+          echo "homey-mcp@${version} published without a SLSA provenance attestation" >&2
+          echo "the version is live; check the npm trusted publisher configuration" >&2
+          exit 1

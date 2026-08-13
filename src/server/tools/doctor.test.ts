@@ -409,6 +409,29 @@ describe('homey_doctor', () => {
     }
   })
 
+  it('names the weather probes in words, since the compatibility report is where untested hardware is described', () => {
+    const checks = buildCapabilityChecks({
+      ...CAPABILITY_REGISTRY,
+      probes: {
+        weather: { status: 'available', probe: 'GET /api/manager/weather/weather', statusCode: 200, durationMs: 16, detail: null },
+        weatherHourlyForecast: {
+          status: 'unsupported',
+          probe: 'GET /api/manager/weather/forecast/hourly',
+          statusCode: 404,
+          durationMs: 12,
+          detail: null,
+        },
+      },
+    })
+
+    expect(checks.map((check) => check.title)).toEqual(['Outdoor weather', 'Hourly weather forecast route'])
+    // Measured: the hourly route is absent on the reference hub while its
+    // weather reading still carries hourly entries, so the advice must not tell
+    // a reader they have no hourly data at all.
+    expect(checks[1]?.status).toBe('warn')
+    expect(checks[1]?.fix).toMatch(/inside its weather reading/)
+  })
+
   it('reports the live request queue, which only this side has', async () => {
     const result = await createHarness().handler({})
 

@@ -139,6 +139,20 @@ describe('buildServerInstructions', () => {
     expect(instructions).toContain('newer (V3)')
   })
 
+  it('announces outdoor weather when the probe found it', () => {
+    const instructions = build(withProbes({ weather: outcome('available', 'GET /api/manager/weather/weather') }))
+
+    expect(instructions).toContain('Outdoor weather (the reading Homey itself uses for the home\'s location): available.')
+  })
+
+  it('says outdoors is unavailable rather than promising it on a hub that has no weather route', () => {
+    const instructions = build(withProbes({ weather: outcome('unsupported', 'GET /api/manager/weather/weather') }))
+    const line = lineFor(instructions, 'Outdoor weather')
+
+    expect(line).toContain('not available on this hardware')
+    expect(line).toContain('compare rooms against each other')
+  })
+
   // A probe fails for four different reasons and only one of them is a fact
   // about the hardware. Rendering the other three as "not available on this
   // hardware" tells the model that retrying can never help, which on a hub that

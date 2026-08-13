@@ -865,6 +865,18 @@ const CAPABILITY_EXPLANATIONS: Record<string, CapabilityExplanation> = {
     title: 'Logic variables',
     consequence: 'homey_variable_set has nothing to write to, and flows using variables cannot be reasoned about',
   },
+  weather: {
+    title: 'Outdoor weather',
+    consequence: 'homey_weather cannot answer, so nothing here can say what it is like outside',
+  },
+  weatherHourlyForecast: {
+    title: 'Hourly weather forecast route',
+    // Measured on the reference hub: this route is absent while the weather
+    // reading itself still carries hourly entries inline, so its absence costs
+    // nothing there. The consequence is worded for the hub where both are gone.
+    consequence:
+      'an hourly forecast is only available if this hub carries one inside its weather reading, and otherwise homey_weather reports whole days only',
+  },
 }
 
 /**

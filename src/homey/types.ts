@@ -110,8 +110,15 @@ export interface CapabilityRegistry {
   notes: string[]
   /**
    * Full probe detail keyed by capability name, including probes that do not
-   * appear in `hardware` (`energyLive`, `logicVariables`). Always populated by
-   * `detectCapabilities`; optional so a test can build a minimal registry.
+   * appear in `hardware` (`energyLive`, `logicVariables`, `weather`,
+   * `weatherHourlyForecast`). Always populated by `detectCapabilities`; optional
+   * so a test can build a minimal registry.
+   *
+   * A probe earns a place in `hardware` when something other than its own tool
+   * has to branch on it: `advancedFlow` decides which tools are registered at
+   * all, `insights` gates a device field, `energyReports` changes what the energy
+   * tool says about history. A capability only its own tool reads stays here,
+   * where `doctor --report` still publishes it for hardware nobody here owns.
    */
   probes?: Record<string, CapabilityProbeOutcome>
 }

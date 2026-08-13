@@ -12,7 +12,7 @@
 // Usage: node scripts/capture-fixtures.mjs [outputDirectory]
 
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const outputDirectory = process.argv[2] ?? 'tests/fixtures/raw'
@@ -44,15 +44,21 @@ function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
-function fetchPath(path) {
-  const stdout = execFileSync('homey', ['api', 'raw', '--path', path], {
-    encoding: 'utf8',
-    maxBuffer: 128 * 1024 * 1024,
-    stdio: ['ignore', 'pipe', 'pipe'],
+// Written to a file and read back, never captured from the pipe.
+//
+// Measured: reading the Homey CLI's stdout through a pipe truncates somewhere
+// around 146 KB, whatever maxBuffer says. The device list on a modest home is
+// roughly twice that and the flow card catalogue is four times it, so a piped
+// read returns JSON that simply stops in the middle of an object. Sometimes that
+// throws, which is the lucky case. Redirecting to a file gets all of it.
+function fetchPath(path, temporaryFile) {
+  execFileSync('sh', ['-c', `homey api raw --path "${path}" > "${temporaryFile}"`], {
+    stdio: ['ignore', 'ignore', 'pipe'],
   })
-  const firstBrace = stdout.search(/[[{]/)
+  const contents = readFileSync(temporaryFile, 'utf8')
+  const firstBrace = contents.search(/[[{]/)
   if (firstBrace === -1) throw new Error(`unexpected response for ${path}`)
-  return JSON.parse(stdout.slice(firstBrace))
+  return JSON.parse(contents.slice(firstBrace))
 }
 
 mkdirSync(outputDirectory, { recursive: true })
@@ -60,7 +66,9 @@ mkdirSync(outputDirectory, { recursive: true })
 let captured = 0
 for (const [name, path] of ENDPOINTS) {
   try {
-    const payload = fetchPath(path)
+    const temporaryFile = join(outputDirectory, `.${name}.partial.json`)
+    const payload = fetchPath(path, temporaryFile)
+    rmSync(temporaryFile, { force: true })
     writeFileSync(join(outputDirectory, `${name}.json`), `${JSON.stringify(payload, null, 2)}\n`)
     const size = Array.isArray(payload) ? payload.length : Object.keys(payload).length
     console.error(`captured ${name} (${size} entries)`)

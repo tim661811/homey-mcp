@@ -71,6 +71,18 @@ node scripts/scrub-fixtures.mjs tests/fixtures/raw tests/fixtures/local
 - `console.log` is banned in `src/`: stdout carries the JSON-RPC stream and any
   stray write corrupts it. Log to stderr through `src/util/log.ts`.
 
+## Releasing
+
+Maintainers only, and the details are easy to get wrong, so they live in
+[RELEASING.md](RELEASING.md) rather than here. The short version: bump the version
+in a commit, let it go green on `main`, then publish a GitHub Release tagged
+`v<version>`. That tag is what triggers the publish, and the workflow refuses to
+publish if the tag and `package.json` disagree.
+
+There is no npm token anywhere in this repository. Publishing authenticates with a
+short-lived GitHub OIDC token, which also gets the release a provenance
+attestation for free.
+
 ## Testing against real hardware
 
 Anything touching flow creation should be tried against a real Homey before it

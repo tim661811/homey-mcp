@@ -113,6 +113,7 @@ describe('createServer', () => {
       'homey_insights_search',
       'homey_insights_query',
       'homey_energy_live',
+      'homey_weather',
       'homey_doctor',
     ])
     expect(new Set(names).size).toBe(names.length)

@@ -160,7 +160,7 @@ export async function createServer(options: CreateServerOptions): Promise<Create
 
 /**
  * Registers every tool module in a fixed order: overview, devices, flows, flow
- * cards, advanced flows, insights, energy, diagnostics.
+ * cards, advanced flows, insights, energy, weather, diagnostics.
  *
  * That is an order over MODULES, and each module keeps its own tools together,
  * so the list a client sees is grouped by subject rather than by how dangerous a
@@ -186,13 +186,14 @@ async function registerToolModules(server: McpServer, context: ServerContext): P
     registered.push(name)
   }
 
-  const [overview, devices, flows, flowCards, insights, energy, doctor] = await Promise.all([
+  const [overview, devices, flows, flowCards, insights, energy, weather, doctor] = await Promise.all([
     import('./tools/overview.js'),
     import('./tools/devices.js'),
     import('./tools/flows.js'),
     import('./tools/flowcards.js'),
     import('./tools/insights.js'),
     import('./tools/energy.js'),
+    import('./tools/weather.js'),
     import('./tools/doctor.js'),
   ])
 
@@ -213,6 +214,11 @@ async function registerToolModules(server: McpServer, context: ServerContext): P
 
   register('insights', insights.registerInsightsTools)
   register('energy', energy.registerEnergyTools)
+  // Weather sits with the other measurement reads rather than at the end,
+  // because a model reaching for the outdoor temperature is in the same frame of
+  // mind as one reading a sensor or the live draw. Diagnostics stay last: they
+  // are about this server, not about the house.
+  register('weather', weather.registerWeatherTools)
   register('doctor', doctor.registerDoctorTools)
 
   return registered

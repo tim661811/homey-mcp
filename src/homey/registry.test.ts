@@ -45,7 +45,12 @@ function missingApiMethod(): Error & { statusCode: number } {
  * what the probe swap and the fallback rules are about.
  */
 function fakeConnection(
-  options: { getLogsFails?: () => Error; getStorageInfoFails?: () => Error } = {},
+  options: {
+    getLogsFails?: () => Error
+    getStorageInfoFails?: () => Error
+    /** Raw routes that fail, keyed by path, for the probes with no manager method. */
+    rawPathFails?: Record<string, () => Error>
+  } = {},
 ): {
   connection: HomeyConnection
   calls: RecordedCall[]
@@ -67,7 +72,11 @@ function fakeConnection(
       },
     },
     logic: { getVariables: async () => [] },
-    call: async () => ({}),
+    call: async ({ path }: { method: string; path: string }) => {
+      const fails = options.rawPathFails?.[path]
+      if (fails !== undefined) throw fails()
+      return {}
+    },
   }
 
   const connection: HomeyConnection = {
@@ -170,6 +179,30 @@ describe('detectCapabilities', () => {
     expect(registry.probes?.['insights']?.status).toBe('unsupported')
     // The note used to quote "not found", which is not what this firmware says.
     expect(registry.notes.join('\n')).not.toContain('not found')
+  })
+
+  it('probes weather on the exact route the weather tool calls', async () => {
+    const { connection, calls } = fakeConnection()
+
+    const registry = await detectCapabilities(connection)
+
+    expect(registry.probes?.['weather']?.status).toBe('available')
+    expect(calls.map((call) => call.label)).toContain('GET /api/manager/weather/weather')
+  })
+
+  it('reads a clean 404 on the hourly forecast route as absent hardware rather than a failure', async () => {
+    // Measured on the reference hub: this route answers 404 while the weather
+    // reading itself carries hourly entries inline, so the note must not claim
+    // the hub has no hourly data at all.
+    const { connection } = fakeConnection({
+      rawPathFails: { '/api/manager/weather/forecast/hourly': notFound },
+    })
+
+    const registry = await detectCapabilities(connection)
+
+    expect(registry.probes?.['weatherHourlyForecast']?.status).toBe('unsupported')
+    expect(registry.probes?.['weather']?.status).toBe('available')
+    expect(registry.notes.join('\n')).toContain('may still carry hourly entries inline')
   })
 
   it('does not let the fallback paper over a scope refusal on the real route', async () => {

@@ -105,6 +105,32 @@ const PROBES: ProbeDefinition[] = [
     description: 'logic variables',
     run: (connection) => managers(connection).logic.getVariables(),
   },
+  {
+    name: 'weather',
+    label: 'GET /api/manager/weather/weather',
+    description: 'the outdoor weather reading',
+    // `homey-api` ships no weather manager on either dialect, so this goes out
+    // as a raw request like the energy report probe above.
+    //
+    // Deliberately the exact route `homey_weather` calls, following the same
+    // reasoning as the Insights probe: only the route the tool uses proves the
+    // tool will work. It costs about 5 KB, most of it the LED ring animation the
+    // firmware bundles into the reply, which is small next to the 617 KB card
+    // catalogue this server already reads on the way in.
+    run: (connection) => managers(connection).call({ method: 'GET', path: '/api/manager/weather/weather' }),
+  },
+  {
+    name: 'weatherHourlyForecast',
+    label: 'GET /api/manager/weather/forecast/hourly',
+    // Worded carefully, because this is what the unsupported note quotes back.
+    // Measured on the reference hub: this route answers a clean 404 while the
+    // weather reading above carries five hourly entries inline under
+    // `forecastHourly`. So an absent route here does not mean the hub has no
+    // hourly data, and a note that said so would be wrong.
+    description: 'a separate hourly weather forecast route (its weather reading may still carry hourly entries inline)',
+    run: (connection) =>
+      managers(connection).call({ method: 'GET', path: '/api/manager/weather/forecast/hourly' }),
+  },
 ]
 
 /**

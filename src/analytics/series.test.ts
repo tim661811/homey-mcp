@@ -18,6 +18,8 @@ import {
   compareStatistics,
   describeWindow,
   fetchInsightsSeries,
+  formatDateInTimezone,
+  formatIsoInTimezone,
   formatPercent,
   isInsightsResolution,
   measureCoverage,
@@ -477,6 +479,35 @@ describe('calendar windows in the hub timezone', () => {
     expect(describeWindow(series, 'Europe/Amsterdam').localStart).toBe('2026-08-12 23:55 GMT+2')
     expect(describeWindow(series, '').localStart).toBeNull()
     expect(describeWindow(series, '').timezone).toBeNull()
+  })
+})
+
+describe('formatIsoInTimezone', () => {
+  it('carries the hub offset rather than rendering the instant as UTC', () => {
+    expect(formatIsoInTimezone('2026-08-13T14:47:39.029Z', 'Europe/Amsterdam')).toBe('2026-08-13T16:47:39+02:00')
+  })
+
+  it('follows daylight saving without a table of its own', () => {
+    // Same zone, same clock, five months apart: CET in January, CEST in August.
+    expect(formatIsoInTimezone('2026-01-13T14:47:39.000Z', 'Europe/Amsterdam')).toBe('2026-01-13T15:47:39+01:00')
+  })
+
+  it('handles a zone whose offset is not a whole number of hours', () => {
+    expect(formatIsoInTimezone('2026-08-13T14:00:00.000Z', 'Asia/Kolkata')).toBe('2026-08-13T19:30:00+05:30')
+  })
+
+  it('signs a western offset', () => {
+    expect(formatIsoInTimezone('2026-08-13T14:00:00.000Z', 'America/New_York')).toBe('2026-08-13T10:00:00-04:00')
+  })
+
+  it('answers null rather than presenting UTC as local time', () => {
+    expect(formatIsoInTimezone('2026-08-13T14:00:00.000Z', '')).toBeNull()
+    expect(formatIsoInTimezone('not a timestamp', 'Europe/Amsterdam')).toBeNull()
+    expect(formatDateInTimezone('2026-08-13T14:00:00.000Z', '')).toBeNull()
+  })
+
+  it('gives the local calendar date, which is not always the UTC one', () => {
+    expect(formatDateInTimezone('2026-08-13T22:30:00.000Z', 'Europe/Amsterdam')).toBe('2026-08-14')
   })
 })
 

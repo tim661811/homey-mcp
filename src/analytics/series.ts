@@ -795,6 +795,7 @@ interface LocalDateParts {
   day: string
   hour: string
   minute: string
+  second: string
 }
 
 function localDateParts(isoTimestamp: string, timezone: string): LocalDateParts | null {
@@ -808,6 +809,7 @@ function localDateParts(isoTimestamp: string, timezone: string): LocalDateParts 
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
+    second: '2-digit',
     // h23 rather than the locale default, which renders midnight as hour 24 in
     // some ICU builds and would sort a day's first bucket to the end.
     hourCycle: 'h23',
@@ -819,11 +821,19 @@ function localDateParts(isoTimestamp: string, timezone: string): LocalDateParts 
   const day = parts.get('day')
   const hour = parts.get('hour')
   const minute = parts.get('minute')
-  if (year === undefined || month === undefined || day === undefined || hour === undefined || minute === undefined) {
+  const second = parts.get('second')
+  if (
+    year === undefined ||
+    month === undefined ||
+    day === undefined ||
+    hour === undefined ||
+    minute === undefined ||
+    second === undefined
+  ) {
     return null
   }
 
-  return { year, month, day, hour, minute }
+  return { year, month, day, hour, minute, second }
 }
 
 function startOfLocalWeek(parts: LocalDateParts): string {
@@ -850,6 +860,55 @@ export function formatInstantInTimezone(isoTimestamp: string, timezone: string):
   const zoneName = zoneFormatter.formatToParts(new Date(isoTimestamp)).find((part) => part.type === 'timeZoneName')
 
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}${zoneName === undefined ? '' : ` ${zoneName.value}`}`
+}
+
+/**
+ * The instant as a machine-readable ISO 8601 string in the hub's zone, for
+ * example `2026-08-14T13:00:00+02:00`. Null when the hub reported no usable
+ * timezone or the timestamp cannot be parsed, so a caller says that rather than
+ * quietly presenting UTC as local time.
+ *
+ * The sibling of `formatInstantInTimezone`, which renders the same instant for a
+ * person to read (`2026-08-14 13:00 CEST`). Both live here because the rule they
+ * share, that local time is cut in the Homey's zone and never in the server's,
+ * is the same rule the calendar buckets above follow.
+ */
+export function formatIsoInTimezone(isoTimestamp: string, timezone: string): string | null {
+  if (!isValidTimezone(timezone)) return null
+
+  const instant = Date.parse(isoTimestamp)
+  if (!Number.isFinite(instant)) return null
+
+  const parts = localDateParts(isoTimestamp, timezone)
+  if (parts === null) return null
+
+  // The offset comes from the zone's own answer rather than from an abbreviation
+  // like "CEST": reading the local wall clock back as though it were UTC and
+  // subtracting the real instant is what the offset means, so this stays correct
+  // across a daylight saving change and for zones with a half-hour offset,
+  // without carrying a table of any of it.
+  const asIfUtc = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+    Number(parts.second),
+  )
+  const offsetMinutes = Math.round((asIfUtc - instant) / 60_000)
+  const sign = offsetMinutes < 0 ? '-' : '+'
+  const offsetHoursPart = String(Math.floor(Math.abs(offsetMinutes) / 60)).padStart(2, '0')
+  const offsetMinutesPart = String(Math.abs(offsetMinutes) % 60).padStart(2, '0')
+
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${sign}${offsetHoursPart}:${offsetMinutesPart}`
+}
+
+/** The local calendar date an instant falls on, `2026-08-14`. Null when the zone is unusable. */
+export function formatDateInTimezone(isoTimestamp: string, timezone: string): string | null {
+  if (!isValidTimezone(timezone)) return null
+  const parts = localDateParts(isoTimestamp, timezone)
+  if (parts === null) return null
+  return `${parts.year}-${parts.month}-${parts.day}`
 }
 
 export interface SeriesWindow {
