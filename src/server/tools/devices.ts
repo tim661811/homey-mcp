@@ -663,11 +663,16 @@ async function resolveDeviceInsights(
   context: ServerContext,
   device: DeviceSummary,
 ): Promise<ResolvedDeviceInsights> {
-  if (!context.capabilities.hardware.insights) {
+  // `=== false` rather than a truth test, because the probe has three answers
+  // and only one of them is a verdict about the hub. A probe that failed or was
+  // refused leaves this null, and refusing on a null hid working history behind
+  // a sentence about a probe that never settled anything. Asking the hub costs
+  // one cached catalogue read and answers with the real, current reason.
+  if (context.capabilities.hardware.insights === false) {
     return {
       logs: [],
       unavailableReason:
-        'This Homey did not answer the Insights routes when the server probed it, so there is no sensor history to list for this device.',
+        'This Homey answered that it does not offer the Insights routes when the server probed it, so there is no sensor history to list for this device.',
     }
   }
 

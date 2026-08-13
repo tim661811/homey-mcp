@@ -24,7 +24,13 @@
 // capability probe fails for four different reasons, and the four are kept apart
 // here for exactly that reason.
 
-import type { CapabilityProbeStatus, CapabilityRegistry, HomeyDialect, HomeyIdentity } from '../homey/types.js'
+import type {
+  CapabilityProbeStatus,
+  CapabilityRegistry,
+  CapabilitySupport,
+  HomeyDialect,
+  HomeyIdentity,
+} from '../homey/types.js'
 
 export interface BuildServerInstructionsOptions {
   identity: HomeyIdentity
@@ -57,10 +63,10 @@ export function buildServerInstructions(options: BuildServerInstructionsOptions)
   const advancedFlow = capabilityOutlook(capabilities, 'advancedFlow', capabilities.hardware.advancedFlow)
   const energyReports = capabilityOutlook(capabilities, 'energyReports', capabilities.hardware.energyReports)
   const moods = capabilityOutlook(capabilities, 'moods', capabilities.hardware.moods)
-  // Weather has no `hardware` flag: nothing outside its own tool branches on it,
-  // so `false` here only ever means "no probe was recorded", which
-  // `capabilityOutlook` reports as unknown rather than as missing.
-  const weather = capabilityOutlook(capabilities, 'weather', false)
+  // Weather has no `hardware` entry: nothing outside its own tool branches on
+  // it, so there is nothing to fall back to and the answer without a probe is
+  // "could not tell".
+  const weather = capabilityOutlook(capabilities, 'weather', null)
 
   const sections: string[] = []
 
@@ -80,7 +86,7 @@ export function buildServerInstructions(options: BuildServerInstructionsOptions)
       renderCapabilityLine(
         'Advanced Flows (the visual, multi-branch kind)',
         advancedFlow,
-        'the advanced flow tools are not registered in this session, so build standard flows instead',
+        describeAdvancedFlowFallback(advancedFlow),
       ),
       renderCapabilityLine(
         'Historical energy reports',
@@ -140,10 +146,15 @@ export function buildServerInstructions(options: BuildServerInstructionsOptions)
       // the one place a model reads before either tool description.
       '4. Resolve every argument whose "resolveWith" is not null, which covers "autocomplete" and "device" arguments alike: a device argument needs the same treatment as an autocomplete one, and "homey_flow_validate" rejects a bare device id. Call "homey_flowcard_autocomplete" with the same "cardId" and the argument name, pick a choice, and store that choice\'s whole "value" object as the argument value, not just its id.',
       // The one value that travels through every step of this list, so it is
-      // worth saying once that it never changes name. It is "cardId" on all five
-      // tools that take it and on every card these tools hand back, so a card
+      // worth saying once that it never changes name. It is "cardId" on every
+      // tool that takes it and on every card these tools hand back, so a card
       // read out of a flow can be sent into another one unedited.
-      '5. A card id is called "cardId" everywhere: on "homey_flowcard_describe", on "homey_flowcard_autocomplete", on every card inside "homey_flow_validate", "homey_flow_create" and "homey_flow_update", and on every card these tools report back. Carry the value across unchanged rather than renaming it.',
+      //
+      // homey_flowcards_search leads the list because step 2 is where a model
+      // first meets the value. It was left out while search alone answered with
+      // "id", and this line then agreed with the tools by omission rather than
+      // by being right.
+      '5. A card id is called "cardId" everywhere: on "homey_flowcards_search", on "homey_flowcard_describe", on "homey_flowcard_autocomplete", on every card inside "homey_flow_validate", "homey_flow_create" and "homey_flow_update", and on every card these tools report back. Carry the value across unchanged rather than renaming it.',
       '6. Check the whole thing with "homey_flow_validate" before writing anything. It is a client-side check that costs nothing and catches the mistakes this firmware reports with misleading messages.',
       '7. Create it with "homey_flow_create". A new flow is created disabled and in a folder named "AI", so nothing starts running the house the moment it is written. Tell the user where to find it and that they must enable it themselves.',
     ].join('\n'),
@@ -160,6 +171,12 @@ export function buildServerInstructions(options: BuildServerInstructionsOptions)
     [
       'Carrying a value from one tool into the next:',
       '- A flow card id is called "cardId" on every tool that takes one and on every card any tool reports back. It never needs renaming in between.',
+      // The other pair of words that crosses this seam, and the one a caller
+      // meets between describing a card and filling it in. "arguments" is the
+      // card's declared list on both discovery tools; "args" is only ever the
+      // values, keyed by the names in that list. They were once one word for
+      // both shapes on two tools used back to back.
+      '- A card\'s declared arguments come back as "arguments" on both "homey_flowcards_search" (each with its name and type) and "homey_flowcard_describe" (each with its whole schema). "args" is always the other thing: the values you set, keyed by those names.',
       '- An Insights series is called "logId" on "homey_insights_search", on "homey_insights_query" and on the logs "homey_device_get" lists for a device. To ask for a device\'s own history, read its logs with "homey_device_get" and pass those logIds straight to "homey_insights_query".',
       '- "homey_devices_search" reports a short "capabilitySummaries" per device: title, value, unit and whether it can be set. "homey_device_get" reports the full "capabilityValues", which additionally carries the type, the decimals and the allowed range. Two names because they are two shapes, and the range only exists on the second one, so read it there before setting anything.',
       ...(advancedFlow === 'available'
@@ -199,19 +216,26 @@ function describeAmbiguityHandling(askSupported: boolean | undefined): string {
 /**
  * What the probe actually said about one capability.
  *
- * The registry's `hardware` booleans are the fallback rather than the source,
- * because they carry only two of the four answers. A registry with no probe
- * detail is a test fixture or an older recording; a false there means "not
- * available", not "this hardware lacks it".
+ * The registry's `hardware` entries are the fallback rather than the source,
+ * because they carry three answers where the probe outcome carries four: they
+ * cannot say whether an unsettled question was refused or merely failed, and
+ * only the probe detail names the reason a reader can act on.
+ *
+ * The fallback maps straight across, `null` included. A registry with no probe
+ * detail is a test fixture or an older recording, and reading its `null` as
+ * either "available" or "not on this hardware" would state a claim nothing ever
+ * established, which is the whole mistake this file exists to avoid.
  */
 function capabilityOutlook(
   capabilities: CapabilityRegistry,
   name: string,
-  hardwareFallback: boolean,
+  hardwareFallback: CapabilitySupport,
 ): CapabilityOutlook {
   const probe = capabilities.probes?.[name]
   if (probe !== undefined) return probe.status
-  return hardwareFallback ? 'available' : 'unknown'
+  if (hardwareFallback === true) return 'available'
+  if (hardwareFallback === false) return 'unsupported'
+  return 'unknown'
 }
 
 /**
@@ -237,8 +261,30 @@ function renderCapabilityLine(feature: string, outlook: CapabilityOutlook, conse
     case 'failed':
       return `- ${feature}: unconfirmed. The probe itself failed, and this hub refuses requests that arrive together, so a probe can fail on a feature that works. For now ${consequence}, but tell the user it is unconfirmed rather than missing, and call "homey_doctor" to see why.`
     case 'unknown':
-      return `- ${feature}: not available, with no probe detail recorded, so a missing feature cannot be told apart from a probe that never completed. For now ${consequence}. "homey_doctor" reports which it is.`
+      // Deliberately does not open with "not available", which is what it used
+      // to do. There is no probe detail behind this branch at all, so leading
+      // with either verdict states something nothing established, and "not
+      // available" is the direction a model acts on by giving up.
+      return `- ${feature}: unconfirmed, with no probe detail recorded, so a missing feature cannot be told apart from a probe that never completed. For now ${consequence}, but tell the user it is unconfirmed rather than missing. "homey_doctor" reports which it is.`
   }
+}
+
+/**
+ * What is true about the advanced flow tools while the capability is not
+ * confirmed.
+ *
+ * It has to follow the registration gate rather than the word "unconfirmed",
+ * because the gate asks `shouldOfferCapability` and therefore registers the
+ * tools on any answer except a hardware verdict. This clause said the tools were
+ * not registered in every branch, so a startup where the probe merely failed
+ * told the model its own tool list was wrong: `homey_advancedflow_update` was
+ * sitting in it while this line said it did not exist.
+ */
+function describeAdvancedFlowFallback(outlook: CapabilityOutlook): string {
+  if (outlook === 'unsupported') {
+    return 'the advanced flow tools are not registered in this session, so build standard flows instead'
+  }
+  return 'the advanced flow tools are registered anyway, so calling one reports the hub\'s own current answer rather than this startup guess; prefer a standard flow while it is unconfirmed'
 }
 
 /**

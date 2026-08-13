@@ -9,6 +9,7 @@ import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
 import { HomeyMcpError } from '../../homey/errors.js'
+import type { CapabilitySupport } from '../../homey/types.js'
 import type { ServerContext } from '../context.js'
 import { READ_ONLY_TOOL_ANNOTATIONS } from '../createServer.js'
 import { failureResult } from '../errors.js'
@@ -180,17 +181,40 @@ function impliedTariff(report: NormalisedEnergyLive): number | null {
   return null
 }
 
+/**
+ * Where energy over time comes from on this hub.
+ *
+ * Three answers, not two. The probe runs once at startup and this hub rate
+ * limits its own local API, so it can fail against a hub that has these routes
+ * and against one that does not, and `null` is what that looks like. Reporting
+ * that as false tells the user the endpoints are absent; reporting it as true,
+ * which is what the registry used to answer for a failed probe, told them a hub
+ * whose report routes answer a clean 404 answers them. Insights is the right
+ * advice in every branch but the first, so an unsettled probe loses nothing by
+ * saying plainly that it is unsettled.
+ */
 function describeHistoryRoute(context: ServerContext): {
-  reportEndpointsAvailable: boolean
+  reportEndpointsAvailable: CapabilitySupport
   guidance: string
 } {
-  const available = context.capabilities.hardware.energyReports
+  const support = context.capabilities.hardware.energyReports
   return {
-    reportEndpointsAvailable: available,
-    guidance: available
-      ? 'This Homey answers the historical energy report routes. Live figures above are instantaneous only.'
-      : 'This Homey has no historical energy report endpoints, which is normal for the 2019 generation rather than a fault. For history, call homey_insights_query on a meter_power log (cumulative kWh: take the difference between endpoints) or a measure_power log (instantaneous watts: energy is the area under it).',
+    reportEndpointsAvailable: support,
+    guidance: describeHistoryGuidance(support),
   }
+}
+
+function describeHistoryGuidance(support: CapabilitySupport): string {
+  const insightsRoute =
+    'call homey_insights_query on a meter_power log (cumulative kWh: take the difference between endpoints) or a measure_power log (instantaneous watts: energy is the area under it)'
+
+  if (support === true) {
+    return 'This Homey answers the historical energy report routes. Live figures above are instantaneous only.'
+  }
+  if (support === false) {
+    return `This Homey has no historical energy report endpoints, which is normal for the 2019 generation rather than a fault. For history, ${insightsRoute}.`
+  }
+  return `Whether this Homey has the historical energy report endpoints was never established: the startup probe did not settle it, which is not the same as their being absent. Run homey_doctor for the probe detail. For history either way, ${insightsRoute}.`
 }
 
 function compareByDrawDescending(left: LiveEnergyItem, right: LiveEnergyItem): number {
@@ -204,6 +228,17 @@ function compareByDrawDescending(left: LiveEnergyItem, right: LiveEnergyItem): n
   return rightWatts - leftWatts || left.name.localeCompare(right.name)
 }
 
+/**
+ * Refuses only where the probe settled the question.
+ *
+ * The same shape as `assertInsightsSupported` in insights.ts, and for the same
+ * reason. `unsupported_hardware` says that no retry can ever help, so it is
+ * reserved for the one outcome that means it. A probe that merely failed leaves
+ * the question open, and this hub rate limits its own local API, so refusing the
+ * call over an inconclusive probe reported a permanent hardware limit that was
+ * never established. Letting the call through costs one request and answers with
+ * the hub's real, current reason.
+ */
 function assertLiveEnergySupported(context: ServerContext): void {
   const probe = context.capabilities.probes?.['energyLive']
   if (probe === undefined || probe.status === 'available') return
@@ -216,11 +251,15 @@ function assertLiveEnergySupported(context: ServerContext): void {
     )
   }
 
-  throw new HomeyMcpError(
-    'unsupported_hardware',
-    'This Homey did not answer the live energy route when the server probed it, so live power is not available here. Run homey_doctor for the probe detail.',
-    { probe },
-  )
+  if (probe.status === 'unsupported') {
+    throw new HomeyMcpError(
+      'unsupported_hardware',
+      'This Homey answered that it has no live energy route when the server probed it, so live power is not available here. Run homey_doctor for the probe detail.',
+      { probe },
+    )
+  }
+
+  // A probe that failed. The hub answers for itself below.
 }
 
 function formatWatts(watts: number | null): string {

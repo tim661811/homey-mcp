@@ -119,14 +119,14 @@ describe('validateFlow', () => {
       actions: [{ id: 'homey:app:com.example.missing:do_something', args: {}, group: 'then' }],
     }
 
-    const [problem] = problemsAt(validateFlow(flow, await contextFor()), 'actions[0].id')
+    const [problem] = problemsAt(validateFlow(flow, await contextFor()), 'actions[0].cardId')
     expect(problem?.problem).toContain('NO CARD')
   })
 
   it('refuses a condition card used as an action', async () => {
     const flow: CanonicalFlow = { ...soundFlow(), actions: [{ id: PRESENCE_CONDITION, args: {}, group: 'then' }] }
 
-    const [problem] = problemsAt(validateFlow(flow, await contextFor()), 'actions[0].id')
+    const [problem] = problemsAt(validateFlow(flow, await contextFor()), 'actions[0].cardId')
     expect(problem?.problem).toContain('is a condition card, so it cannot be used as an action')
     // "a action" is what an article glued to the kind produced, and a reader
     // who cannot trust the grammar reads the rest of the sentence more slowly.
@@ -142,7 +142,7 @@ describe('validateFlow', () => {
       conditions: [{ id: PROGRAMMATIC_TRIGGER, args: {}, group: 'group1' }],
     }
 
-    const [problem] = problemsAt(validateFlow(flow, await contextFor()), 'conditions[0].id')
+    const [problem] = problemsAt(validateFlow(flow, await contextFor()), 'conditions[0].cardId')
     expect(problem?.problem).toContain('a trigger card ("This Flow is started")')
     expect(problem?.problem).toContain('an action card ("Start a Flow")')
     expect(problem?.problem).toContain('none of them can be used as a condition')
@@ -170,7 +170,7 @@ describe('validateFlow', () => {
       conditions: [{ id: PROGRAMMATIC_TRIGGER, args: {}, group: 'group1' }],
     }
 
-    const [problem] = problemsAt(validateFlow(flow, await contextFor()), 'conditions[0].id')
+    const [problem] = problemsAt(validateFlow(flow, await contextFor()), 'conditions[0].cardId')
     expect(problem?.problem).toContain('used as a condition')
     expect(problem?.problem).not.toContain('has no flow card')
   })
@@ -178,13 +178,13 @@ describe('validateFlow', () => {
   it('refuses something that is not a card id at all', async () => {
     const flow: CanonicalFlow = { ...soundFlow(), trigger: { id: 'turn on the light', args: {} } }
 
-    expect(problemsAt(validateFlow(flow, await contextFor()), 'trigger.id')).toHaveLength(1)
+    expect(problemsAt(validateFlow(flow, await contextFor()), 'trigger.cardId')).toHaveLength(1)
   })
 
   it('names a deprecated card without refusing it', async () => {
     const flow: CanonicalFlow = { ...soundFlow(), trigger: { id: `homey:device:${LAMP_ID}:onoff_true`, args: {} } }
 
-    const problems = problemsAt(validateFlow(flow, await contextFor()), 'trigger.id')
+    const problems = problemsAt(validateFlow(flow, await contextFor()), 'trigger.cardId')
     expect(problems[0]?.problem).toContain('deprecated')
   })
 
@@ -359,7 +359,7 @@ describe('validateFlow', () => {
     }
 
     const problems = validateFlow(flow, await contextFor())
-    expect(problemsAt(problems, 'trigger.id')).toHaveLength(1)
+    expect(problemsAt(problems, 'trigger.cardId')).toHaveLength(1)
     expect(problemsAt(problems, 'actions[0].args.text')).toEqual([])
   })
 

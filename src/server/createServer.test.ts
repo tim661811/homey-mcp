@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import { createServer } from './createServer.js'
 import type { HomeCache } from '../homey/cache.js'
+import { detectCapabilities } from '../homey/registry.js'
 import type { CapabilityRegistry, HomeyConnection } from '../homey/types.js'
 import { createLogger } from '../util/log.js'
 
@@ -32,6 +33,46 @@ function fakeConnection(): HomeyConnection {
     queue: { run: async (operation) => operation(), inFlight: 0, queued: 0 },
     request: async (operation) => operation(),
   }
+}
+
+/**
+ * A connection whose capability probe can be made to answer for real.
+ *
+ * The registration gate reads what `detectCapabilities` wrote, so the tests
+ * below run the actual probe rather than hand-building a registry: the pair of
+ * them is what decides whether a tool exists, and a hand-built fixture would
+ * pass while the two halves disagreed.
+ */
+function probingConnection(advancedFlowFails: () => Error): HomeyConnection {
+  return {
+    ...fakeConnection(),
+    api: {
+      flow: {
+        getAdvancedFlows: async () => {
+          throw advancedFlowFails()
+        },
+      },
+      energy: { getLiveReport: async () => ({}) },
+      moods: { getMoods: async () => [] },
+      insights: { getLogs: async () => [], getStorageInfo: async () => ({}) },
+      logic: { getVariables: async () => [] },
+      call: async () => ({}),
+    },
+  }
+}
+
+/** Measured on the hardware: an absent method is HTTP 500 with a bracketed code, not a 404. */
+function missingApiMethod(): Error & { statusCode: number } {
+  return Object.assign(new Error('Er is een onbekende fout opgetreden [missing_api_method]'), { statusCode: 500 })
+}
+
+/** Measured on the hardware: four rapid requests are enough to be turned away. */
+function rateLimited(): Error & { statusCode: number } {
+  return Object.assign(new Error('Too many requests'), { statusCode: 429 })
+}
+
+async function probedCapabilities(advancedFlowFails: () => Error): Promise<CapabilityRegistry> {
+  return detectCapabilities(probingConnection(advancedFlowFails), { logger: createLogger({ level: 'silent' }) })
 }
 
 /**
@@ -192,5 +233,38 @@ describe('createServer', () => {
 
     expect(names).toContain('homey_advancedflow_create')
     expect(names).toContain('homey_advancedflow_update')
+  })
+
+  // The gate itself, from the probe that decides it. Nothing pinned this before,
+  // and both directions of it are load-bearing: the registry is built once at
+  // startup and never rebuilt, so whichever way this branch goes, it goes that
+  // way for the life of the process.
+  describe('the Advanced Flow registration gate', () => {
+    it('still registers the tools when the probe failed rather than answered', async () => {
+      // This hub rate limits its own local API, so a probe can fail on a feature
+      // that works. Refusing to register on that hides working tools for the
+      // whole session, and the model is told the hardware cannot author flows.
+      const capabilities = await probedCapabilities(rateLimited)
+      expect(capabilities.probes?.['advancedFlow']?.status).toBe('failed')
+      expect(capabilities.hardware.advancedFlow).toBeNull()
+
+      const names = (await (await buildClient(capabilities)).listTools()).tools.map((tool) => tool.name)
+
+      expect(names).toContain('homey_advancedflow_create')
+      expect(names).toContain('homey_advancedflow_update')
+    })
+
+    it('leaves them out when the hub answered that the route is absent', async () => {
+      // The other half. Keeping an unsettled probe registered is only correct as
+      // long as a real verdict about the hardware still closes the door.
+      const capabilities = await probedCapabilities(missingApiMethod)
+      expect(capabilities.probes?.['advancedFlow']?.status).toBe('unsupported')
+      expect(capabilities.hardware.advancedFlow).toBe(false)
+
+      const names = (await (await buildClient(capabilities)).listTools()).tools.map((tool) => tool.name)
+
+      expect(names).not.toContain('homey_advancedflow_create')
+      expect(names).not.toContain('homey_advancedflow_update')
+    })
   })
 })

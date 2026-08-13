@@ -57,6 +57,39 @@ describe('redactString', () => {
     expect(redacted).not.toContain(OPAQUE_TOKEN)
   })
 
+  it('masks whatever follows a scheme in a header, even when it is shaped like a word', () => {
+    // A header value is the one place the run after the scheme can only be a
+    // credential, so the shape rule below does not get a say here.
+    expect(redactString('Authorization: Bearer loremipsum')).toBe('Authorization: Bearer lore...[10 chars]')
+    expect(redactString('{"authorization":"Token loremipsum"}')).toBe(
+      '{"authorization":"Token lore...[10 chars]"}',
+    )
+  })
+
+  it('leaves an English sentence containing the word token alone', () => {
+    // The rule used to mask whatever followed Bearer, Basic or Token wherever it
+    // appeared, which is right for a header and wrong for prose. Four of this
+    // server's own messages were damaged by it, all of them sentences a user
+    // reads when something has already gone wrong.
+    for (const sentence of [
+      'This is not a token reference this Homey understands.',
+      'Token references are written differently in the two kinds of flow.',
+      'An advanced flow refers to the node that produced the token instead. Mixing them breaks it.',
+      'There is no Athom account token alongside it to get a new one with.',
+      'Every device and token reference resolves.',
+    ]) {
+      expect(redactString(sentence), sentence).toBe(sentence)
+    }
+  })
+
+  it('masks a credential-shaped run after a scheme wherever it appears', () => {
+    // Outside a header the shape decides, and a credential is drawn from an
+    // encoding alphabet rather than from a dictionary.
+    for (const value of ['Bearer 8f3c2a19d4b7e6c5', 'Token dXNlcjpwYXNzd29yZA', 'Basic aB3dEf9haB3dEf9h']) {
+      expect(redactString(value), value).toContain('...[')
+    }
+  })
+
   it('masks a long hexadecimal run', () => {
     expect(redactString(`session=${HEXADECIMAL_TOKEN}`)).not.toContain(HEXADECIMAL_TOKEN)
   })

@@ -96,7 +96,7 @@ const flowCardInput = z.object({
   args: z
     .record(z.string(), z.unknown())
     .optional()
-    .describe('The card\'s arguments, keyed by the argument name from homey_flowcard_describe. Omit for a card that takes none.'),
+    .describe('The values this card is set to, keyed by the argument name from the "arguments" list homey_flowcard_describe reports. That list is the schema; this is what you fill in. Omit for a card that takes none.'),
   group: z
     .string()
     .optional()
@@ -131,7 +131,10 @@ const advancedNodeInput = z.object({
     .enum(ADVANCED_NODE_TYPES)
     .describe('trigger and start begin a branch; condition splits it; action does something; delay waits; any continues on the first incoming branch; all waits for every one; note is a comment on the canvas.'),
   cardId: z.string().optional().describe('The flow card id. Only on trigger, condition and action cards.'),
-  args: z.record(z.string(), z.unknown()).optional().describe('The card\'s arguments, keyed by argument name.'),
+  args: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe('The values this card is set to, keyed by the argument name from the "arguments" list homey_flowcard_describe reports.'),
   inverted: z.boolean().optional().describe('Conditions only. True turns the condition into "is NOT".'),
   // Nullable for the same reason as the standard card above: a node read back
   // through homey_flow_get has to be sendable straight back here.
@@ -432,10 +435,18 @@ export function registerFlowTools(server: McpServer, context: ServerContext): vo
           // homey_flows_list on a hub without the unlock. Naming the tool
           // unconditionally therefore sent the model looking for a tool that is
           // not in its list.
+          //
+          // `!== false` rather than a truth test, because the probe has three
+          // answers. It is the same question createServer asks through
+          // shouldOfferCapability when it decides whether to register the tool,
+          // so a probe that merely failed registers the tool AND names it here.
+          // A bare truth test read that null as "absent" and told the owner
+          // their Homey does not have Advanced Flow while the tool sat in the
+          // model's list.
           return invalidRequestResult(
             `"${summary.name}" is an advanced flow: it has a graph of cards rather than one trigger and a list of actions.`,
             {
-              suggestion: context.capabilities.hardware.advancedFlow
+              suggestion: context.capabilities.hardware.advancedFlow !== false
                 ? 'Use homey_advancedflow_update instead.'
                 : 'This Homey does not have Advanced Flow, so this server offers no tool that can change one. Advanced Flow is a separate purchase on a Homey Pro (2016 - 2019); change this flow in the Homey app instead.',
               flowId: summary.id,

@@ -51,8 +51,44 @@ const SECRET_KEY_SUFFIXES = ['api_key', 'access_key', 'private_key', 'secret_key
 /** A JSON Web Token: three base64url segments, the first one starting `eyJ`. */
 const JSON_WEB_TOKEN_PATTERN = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)?/g
 
-/** `Authorization: Bearer <credential>` and its Basic/Token siblings. */
+/**
+ * `Authorization: Bearer <credential>` and its Basic/Token siblings.
+ *
+ * The scheme word and the run after it are captured separately because this
+ * pattern cannot decide on its own whether it found a credential: all three
+ * scheme words are also ordinary English, and "Token" in particular is a word
+ * this project's own messages use constantly. Matching the run and masking it
+ * unconditionally turned "is not a token reference this Homey understands" into
+ * "is not a token refe...[9 chars] this Homey understands", which is why the
+ * replacer below asks two further questions before masking anything.
+ */
 const AUTHORIZATION_SCHEME_PATTERN = /\b(Bearer|Basic|Token)(\s+)([A-Za-z0-9._~+/=-]{8,})/gi
+
+/**
+ * One ordinary word, or several joined by a hyphen or an apostrophe.
+ *
+ * This is what English prose after the word "token" looks like, and it is also
+ * what a flow name, a zone name and a device name look like. A credential is
+ * drawn from an encoding alphabet instead, so it carries a digit, a separator
+ * that no word uses, or camelCase.
+ */
+const ORDINARY_WORDS_PATTERN = /^[A-Za-z]+(?:['-][A-Za-z]+)*$/
+
+/** A case change inside a run: base64 does it constantly, prose never does. */
+const INTERNAL_CASE_CHANGE_PATTERN = /[a-z][A-Z]/
+
+/**
+ * A header-shaped context: the scheme word sits exactly where an HTTP header
+ * value begins, so whatever follows it is a credential whatever it looks like.
+ *
+ * This is what keeps `Authorization: Token abcdefghij` masked even though the
+ * run after the scheme is shaped like a word. Trailing quotes and whitespace are
+ * allowed because the same pair appears inside a serialised header object.
+ */
+const AUTHORIZATION_HEADER_NAME_PATTERN = /authorization["'\s]*[:=][\s"']*$/i
+
+/** Full stops that ended a sentence rather than belonging to the run before them. */
+const TRAILING_FULL_STOPS_PATTERN = /\.+$/
 
 /**
  * A long hexadecimal run. 32 is the threshold because Athom cloud identifiers
@@ -124,6 +160,21 @@ export function maskSecret(value: string): string {
   return `${prefix}...[${value.length} chars]`
 }
 
+/**
+ * True when a run that follows an authorization scheme word is shaped like a
+ * credential rather than like the next word of a sentence.
+ *
+ * The asymmetry at the top of this file still holds, so this errs towards
+ * masking: anything that is not plainly a word, or several words joined the way
+ * a name is, counts as a credential. What it protects is the other half of the
+ * bargain, which the length rule alone could not: an English sentence containing
+ * the word "token" is prose, not a header, and must reach the reader whole.
+ */
+function isCredentialShapedRun(run: string): boolean {
+  if (INTERNAL_CASE_CHANGE_PATTERN.test(run)) return true
+  return !ORDINARY_WORDS_PATTERN.test(run)
+}
+
 /** True when a key name says its value is a credential, whatever the value looks like. */
 export function isSecretKey(key: string): boolean {
   const normalisedKey = key
@@ -157,8 +208,18 @@ export function redactString(value: string): string {
 
   output = output.replace(
     AUTHORIZATION_SCHEME_PATTERN,
-    (_match, scheme: string, spacing: string, credential: string) =>
-      `${scheme}${spacing}${maskSecret(credential)}`,
+    (match: string, scheme: string, spacing: string, run: string, offset: number, whole: string) => {
+      // A credential can end a sentence, but the full stop belongs to the
+      // sentence rather than to the credential, so it is judged and kept apart.
+      const trailingFullStops = TRAILING_FULL_STOPS_PATTERN.exec(run)?.[0] ?? ''
+      const credential = run.slice(0, run.length - trailingFullStops.length)
+      if (credential === '') return match
+
+      const inHeader = AUTHORIZATION_HEADER_NAME_PATTERN.test(whole.slice(0, offset))
+      if (!inHeader && !isCredentialShapedRun(credential)) return match
+
+      return `${scheme}${spacing}${maskSecret(credential)}${trailingFullStops}`
+    },
   )
 
   output = output.replace(HEXADECIMAL_RUN_PATTERN, (match) => maskSecret(match))

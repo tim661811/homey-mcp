@@ -7,6 +7,7 @@ import { createHomeCache } from '../../homey/cache.js'
 import type {
   CapabilityProbeOutcome,
   CapabilityRegistry,
+  CapabilitySupport,
   HomeyConnection,
   HomeyIdentity,
 } from '../../homey/types.js'
@@ -165,8 +166,9 @@ function createRecordingServer(): { server: McpServer; tools: Map<string, Record
 }
 
 interface HarnessOptions {
-  insightsSupported?: boolean
-  /** The recorded probe outcome. Without one the registry carries only the boolean above. */
+  /** What the registry says about Insights. Null is the answer when the probe settled nothing. */
+  insightsSupported?: CapabilitySupport
+  /** The recorded probe outcome. Without one the registry carries only the answer above. */
   insightsProbe?: CapabilityProbeOutcome
   askSupported?: boolean
   ask?: (options: AskOptions) => Promise<AskResult>
@@ -204,7 +206,7 @@ function createHarness(options: HarnessOptions = {}) {
       advancedFlow: false,
       energyReports: false,
       moods: false,
-      insights: options.insightsSupported !== false,
+      insights: options.insightsSupported === undefined ? true : options.insightsSupported,
     },
     probedAt: '2026-08-13T08:00:00.000Z',
     notes: [],
@@ -296,9 +298,23 @@ describe('homey_insights_search', () => {
     const everywhere = structured(await callTool(tools, 'homey_insights_search', { query: 'temperature' }))
     const oneRoom = structured(await callTool(tools, 'homey_insights_search', { query: 'woonkamer temperature' }))
 
-    expect(everywhere['matchCount']).toBe(2)
-    expect(oneRoom['matchCount']).toBe(1)
+    expect(everywhere['totalMatches']).toBe(2)
+    expect(oneRoom['totalMatches']).toBe(1)
     expect((oneRoom['candidates'] as Array<Record<string, unknown>>)[0]?.['ownerName']).toBe('Thermostaat')
+  })
+
+  it('counts its matches under the name every other list on this server uses', async () => {
+    // homey_devices_search, homey_flows_list, homey_flowcards_search and
+    // homey_flowcard_autocomplete all answer "how many matched" as
+    // totalMatches. This tool answered the same question as matchCount, so a
+    // model reading a truncated result had to know which tool it was holding
+    // before it could tell how much it was missing.
+    const { tools } = createHarness()
+
+    const result = structured(await callTool(tools, 'homey_insights_search', { query: 'temperature' }))
+
+    expect(Object.keys(result)).toContain('totalMatches')
+    expect(Object.keys(result)).not.toContain('matchCount')
   })
 
   it('filters by log type', async () => {
@@ -660,6 +676,20 @@ describe('homey_insights_query', () => {
 
     it('names a refused probe as a permissions problem rather than a hardware one', async () => {
       expect(failure(await query('forbidden'))['reason']).toBe('missing_scope')
+    })
+
+    it('asks the hub anyway when the registry itself settled nothing and no probe was recorded', async () => {
+      // A registry entry is null when the probe did not settle the question, and
+      // with no probe detail behind it that null is all there is. Refusing on it
+      // would report a hardware limit nobody measured, which is the same claim
+      // the four statuses above exist to keep apart.
+      const { tools } = createHarness({ insightsSupported: null })
+
+      const result = await callTool(tools, 'homey_insights_query', {
+        logs: [`homey:device:${SENSOR_ID}:measure_temperature`],
+      })
+
+      expect(result.isError).toBeUndefined()
     })
   })
 })

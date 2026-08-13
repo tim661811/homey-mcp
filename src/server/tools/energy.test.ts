@@ -4,7 +4,13 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 
 import { createHomeCache } from '../../homey/cache.js'
-import type { CapabilityProbeOutcome, CapabilityRegistry, HomeyConnection, HomeyIdentity } from '../../homey/types.js'
+import type {
+  CapabilityProbeOutcome,
+  CapabilityRegistry,
+  CapabilitySupport,
+  HomeyConnection,
+  HomeyIdentity,
+} from '../../homey/types.js'
 import { createLogger } from '../../util/log.js'
 import type { ServerContext } from '../context.js'
 import { registerEnergyTools } from './energy.js'
@@ -101,7 +107,8 @@ function createRecordingServer(): { server: McpServer; tools: Map<string, Record
 
 interface HarnessOptions {
   energyLiveProbe?: CapabilityProbeOutcome
-  energyReports?: boolean
+  /** Null is what the probe answers when it did not settle the question, which is a third case rather than a false. */
+  energyReports?: CapabilitySupport
   liveReport?: unknown
 }
 
@@ -124,7 +131,7 @@ function createHarness(options: HarnessOptions = {}) {
     hardware: {
       advancedFlow: false,
       // Measured: the historical report routes 404 on this generation.
-      energyReports: options.energyReports === true,
+      energyReports: options.energyReports === undefined ? false : options.energyReports,
       moods: false,
       insights: true,
     },
@@ -263,6 +270,53 @@ describe('homey_energy_live', () => {
     expect(history['reportEndpointsAvailable']).toBe(false)
     expect(String(history['guidance'])).toMatch(/meter_power/)
     expect(String(history['guidance'])).toMatch(/measure_power/)
+  })
+
+  it('does not claim the report endpoints are absent when the probe never settled it', async () => {
+    // The measured residual, from the other end. A dropped connection at startup
+    // left this unsettled, the registry answered true, and the tool then told
+    // the model this Homey answers routes that reply with a clean 404. Answering
+    // false instead would be the mirror of the same mistake, so the tool reports
+    // the third state and still names the route that works either way.
+    const { tools } = createHarness({ energyReports: null })
+
+    const history = structured(await callTool(tools, 'homey_energy_live', {}))['history'] as Record<string, unknown>
+
+    expect(history['reportEndpointsAvailable']).toBeNull()
+    expect(String(history['guidance'])).toContain('never established')
+    expect(String(history['guidance'])).not.toMatch(/This Homey answers the historical energy report routes/)
+    expect(String(history['guidance'])).not.toMatch(/This Homey has no historical energy report endpoints/)
+    expect(String(history['guidance'])).toMatch(/meter_power/)
+  })
+
+  it('reports the endpoints as present only when the probe found them', async () => {
+    const { tools } = createHarness({ energyReports: true })
+
+    const history = structured(await callTool(tools, 'homey_energy_live', {}))['history'] as Record<string, unknown>
+
+    expect(history['reportEndpointsAvailable']).toBe(true)
+    expect(String(history['guidance'])).toContain('answers the historical energy report routes')
+  })
+
+  it('answers the call when the live probe merely failed, rather than calling it a hardware limit', async () => {
+    // A probe that failed settles nothing: it runs once at startup, on a hub
+    // that rate limits its own local API. Refusing here reported a permanent
+    // hardware limit that was never measured, and hid a working reading for the
+    // life of the process.
+    const { tools } = createHarness({
+      energyLiveProbe: {
+        status: 'failed',
+        probe: 'energy.getLiveReport',
+        statusCode: 429,
+        durationMs: 12,
+        detail: 'Homey is refusing further requests for the moment.',
+      },
+    })
+
+    const result = await callTool(tools, 'homey_energy_live', {})
+
+    expect(result.isError).not.toBe(true)
+    expect(structured(result)['zoneName']).toBe('Thuis')
   })
 
   it('answers unsupported hardware when the probe found no live route', async () => {

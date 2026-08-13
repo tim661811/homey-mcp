@@ -61,6 +61,11 @@ function fakeConnection(
     getAdvancedFlowsFails?: () => Error
     /** Raw routes that fail, keyed by path, for the probes with no manager method. */
     rawPathFails?: Record<string, () => Error>
+    /**
+     * Every route fails with this, which is the measured startup on a connection
+     * that drops. It overrides the per-route options above.
+     */
+    everythingFails?: () => Error
   } = {},
 ): {
   connection: HomeyConnection
@@ -68,27 +73,51 @@ function fakeConnection(
 } {
   const calls: RecordedCall[] = []
 
+  const everythingFails = options.everythingFails
+  const refuseEverything = (): void => {
+    if (everythingFails !== undefined) throw everythingFails()
+  }
+
   const api = {
     flow: {
       getAdvancedFlows: async () => {
+        refuseEverything()
         if (options.getAdvancedFlowsFails !== undefined) throw options.getAdvancedFlowsFails()
         return []
       },
     },
-    energy: { getLiveReport: async () => ({}) },
-    moods: { getMoods: async () => [] },
+    energy: {
+      getLiveReport: async () => {
+        refuseEverything()
+        return {}
+      },
+    },
+    moods: {
+      getMoods: async () => {
+        refuseEverything()
+        return []
+      },
+    },
     insights: {
       getStorageInfo: async () => {
+        refuseEverything()
         if (options.getStorageInfoFails !== undefined) throw options.getStorageInfoFails()
         return {}
       },
       getLogs: async () => {
+        refuseEverything()
         if (options.getLogsFails !== undefined) throw options.getLogsFails()
         return []
       },
     },
-    logic: { getVariables: async () => [] },
+    logic: {
+      getVariables: async () => {
+        refuseEverything()
+        return []
+      },
+    },
     call: async ({ path }: { method: string; path: string }) => {
+      refuseEverything()
       const fails = options.rawPathFails?.[path]
       if (fails !== undefined) throw fails()
       return {}
@@ -238,29 +267,32 @@ describe('detectCapabilities', () => {
     expect(registry.probes?.['insights']?.status).not.toBe('available')
   })
 
-  // A registry with no probe detail cannot tell an absent feature from a probe
-  // that never completed, so these four booleans are the last thing standing
-  // between a bad moment at startup and a permanent claim about someone's
-  // hardware. They gate tool registration and the registry is never rebuilt.
-  describe('what the hardware booleans mean when a probe did not answer', () => {
-    it('keeps a capability offered when its probe failed rather than answered', async () => {
+  // A registry entry that cannot tell an absent feature from a probe that never
+  // completed is the last thing standing between a bad moment at startup and a
+  // permanent claim about someone's hardware. It is read by tool registration,
+  // by the model-facing instructions and by the energy tool, and the registry is
+  // never rebuilt.
+  describe('what the hardware entries mean when a probe did not answer', () => {
+    it('leaves a capability undetermined when its probe failed rather than answered', async () => {
       // The blocker. This hub rate limits its own local API, undocumented and
       // measured at four rapid requests, so a probe can fail on a feature that
       // works. Collapsing that into the same false as "the endpoint is absent"
       // unregistered the Advanced Flow tools for the life of the process and
-      // told the model this hardware cannot author them.
+      // told the model this hardware cannot author them. Collapsing it into true
+      // instead, which is what it did next, asserted a feature the hardware may
+      // well not have. Neither is a measurement, so this answers null.
       const { connection } = fakeConnection({ getAdvancedFlowsFails: rateLimited })
 
       const registry = await detectCapabilities(connection)
 
       expect(registry.probes?.['advancedFlow']?.status).toBe('failed')
-      expect(registry.hardware.advancedFlow).toBe(true)
+      expect(registry.hardware.advancedFlow).toBeNull()
     })
 
     it('still switches a capability off when the hub says the endpoint is absent', async () => {
-      // The other half of the same distinction. Keeping a failed probe offered
-      // is only correct as long as a real hardware verdict still closes the
-      // door, otherwise the fix would advertise features no hub has.
+      // The other half of the same distinction. Leaving a failed probe
+      // undetermined is only correct as long as a real hardware verdict still
+      // closes the door, otherwise the fix would advertise features no hub has.
       const { connection } = fakeConnection({ getAdvancedFlowsFails: missingApiMethod })
 
       const registry = await detectCapabilities(connection)
@@ -279,7 +311,29 @@ describe('detectCapabilities', () => {
       const registry = await detectCapabilities(connection)
 
       expect(registry.probes?.['advancedFlow']?.status).toBe('forbidden')
-      expect(registry.hardware.advancedFlow).toBe(true)
+      expect(registry.hardware.advancedFlow).toBeNull()
+    })
+
+    it('claims nothing about the hardware when every probe is lost to the network', async () => {
+      // Measured against the built binary: on a connection where every probe
+      // throws ECONNRESET, `hardware.energyReports` came back true on a hub
+      // whose energy report routes answer a clean 404. One transient network
+      // problem at startup therefore asserted a capability the hardware does not
+      // have, for the life of the process, and the tools and the instructions
+      // repeated it.
+      const { connection } = fakeConnection({
+        everythingFails: () => Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }),
+      })
+
+      const registry = await detectCapabilities(connection)
+
+      expect(registry.probes?.['energyReports']?.status).toBe('failed')
+      expect(registry.hardware.energyReports).toBeNull()
+      expect(registry.hardware.advancedFlow).toBeNull()
+      expect(registry.hardware.insights).toBeNull()
+      // Nothing here may read as a settled answer in either direction.
+      expect(Object.values(registry.hardware)).not.toContain(true)
+      expect(Object.values(registry.hardware)).not.toContain(false)
     })
 
     it('tells the reader a failed probe can be retried by restarting', async () => {
@@ -294,6 +348,22 @@ describe('detectCapabilities', () => {
       expect(notes).toContain('restart this server')
       expect(notes).not.toContain('Treating it as unavailable')
       expect(notes).not.toContain('does not offer Advanced Flow authoring')
+    })
+
+    it('ends the borrowed error message once rather than twice', async () => {
+      // The note composes a sentence around the hub's own message, and that
+      // message is already a finished sentence, so the two full stops met in the
+      // middle: "if it keeps happening.. That is not a verdict". A rate limited
+      // probe reproduces it, because its classified message ends in a full stop
+      // like every other one.
+      const { connection } = fakeConnection({ getAdvancedFlowsFails: rateLimited })
+
+      const registry = await detectCapabilities(connection)
+      const note = registry.notes.find((candidate) => candidate.startsWith('Could not determine'))
+
+      expect(note).toBeDefined()
+      expect(note).not.toMatch(/\.\./u)
+      expect(note).toContain('That is not a verdict about the hardware')
     })
   })
 })

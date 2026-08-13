@@ -331,6 +331,53 @@ describe('openReconnectingConnection', () => {
     expect(loadCredentials.mock.calls.length).toBe(attemptsAfterFirst + 1)
   })
 
+  it('explains itself the same way inside the retry window as outside it', async () => {
+    // The window exists so a Homey that is off the network does not get one
+    // address-ladder walk per tool call. It suppresses that walk and nothing
+    // else: a genuine refusal arriving seconds after a session was successfully
+    // renewed used to fall straight through it with the raw refusal, so the
+    // caller inside the window was told less than the identical caller outside
+    // it, on the same failure.
+    const connector = createConnector()
+    let clock = 0
+    const loadCredentials = vi.fn(async () => credentialsWithSession(`session-${connector.sessions.length + 1}`))
+
+    const connection = await openReconnectingConnection({
+      credentials: await loadCredentials(),
+      loadCredentials,
+      logger,
+      connectImplementation: connector.connect,
+      retryIntervalMs: 30_000,
+      now: () => clock,
+    })
+
+    // The 24 hour wall, handled: the session is renewed and the read succeeds.
+    connector.sessions[0]?.retire()
+    await connection.request(readDevices(connection), 'devices.getDevices', true)
+    expect(connection.sessionCount).toBe(2)
+    const attemptsAfterRenewal = loadCredentials.mock.calls.length
+
+    // Five seconds later, well inside the window, the renewed session is refused
+    // too. This one is a write, so it is exactly the case where the caller needs
+    // to be told whether their house changed.
+    clock += 5_000
+    connector.sessions[1]?.retire()
+
+    const failure = await failureFrom(
+      connection.request(
+        () => (connection.api as { setCapability(): Promise<string> }).setCapability(),
+        'devices.setCapabilityValue',
+      ),
+    )
+
+    expect(failure.reason).toBe('transient')
+    expect(failure.message).toContain('did not carry this call out')
+    expect(failure.message).toContain('never repeats one of those by itself')
+    // And the work really was suppressed: no second ladder walk, no third session.
+    expect(loadCredentials.mock.calls.length).toBe(attemptsAfterRenewal)
+    expect(connection.sessionCount).toBe(2)
+  })
+
   it('signs in once for several calls that fail together', async () => {
     // An assistant fires a handful of tool calls at once. Signing in once per
     // call would mint several sessions against a hub that refuses requests

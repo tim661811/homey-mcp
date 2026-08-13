@@ -285,10 +285,23 @@ export async function openReconnectingConnection(
     if (rebuildInFlight !== null) return await rebuildInFlight
 
     if (now() - lastAttemptAt < retryIntervalMs) {
-      // Already tried a moment ago. Reporting the reason that attempt failed is
-      // more use than the refusal this call saw, because it is the one that
-      // names the command to run.
-      throw lastRebuildFailure ?? trigger
+      // Already tried a moment ago. What this window is for is the work: a
+      // rebuild walks the whole address ladder, and a Homey that is off the
+      // network would otherwise get one walk per tool call. It is not for the
+      // answer the caller gets, which stays the same inside the window as
+      // outside it.
+      //
+      // The last attempt failed, so its reason is the useful one: it is the
+      // sentence that names the command to run, where the refusal this call saw
+      // names nothing.
+      if (lastRebuildFailure !== null) throw lastRebuildFailure
+
+      // The last attempt worked, so the session is seconds old and there is
+      // nothing to rebuild. Returning rather than rethrowing is what stops a
+      // caller inside the window getting a worse answer than one outside it:
+      // the bare refusal, with none of the guidance below about what did and did
+      // not happen to their house.
+      return
     }
 
     lastAttemptAt = now()
@@ -502,10 +515,9 @@ function assertSessionUsable(credentials: ResolvedCredentials, now: Date): void 
 
   throw new HomeyMcpError(
     'not_connected',
-    // "no Athom account credential beside it" rather than "no Athom account
-    // token alongside it": the redactor masks whatever follows the word "token",
-    // because that is what an Authorization header looks like, so the sentence
-    // reached the user as "no Athom account token alon...[9 chars] it".
+    // "credential" rather than "token" because both a Personal Access Token and
+    // a cloud token qualify, and naming one of them would send someone looking
+    // for the wrong thing.
     `The Homey session in ${credentials.sourceDescription} expired at ${credentials.sessionExpiresAt ?? 'an unknown time'}, and there is no Athom account credential beside it to get a new one with. Homey sessions last exactly 24 hours, so this is expected rather than a fault. Run "homey login" to sign in again. A server that is already running picks the new session up by itself; one that has stopped needs starting again.`,
     {
       sessionExpiresAt: credentials.sessionExpiresAt,

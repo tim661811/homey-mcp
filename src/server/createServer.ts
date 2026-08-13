@@ -29,6 +29,7 @@ import { buildServerInstructions } from './instructions.js'
 import type { HomeCache } from '../homey/cache.js'
 import { createHomeCache } from '../homey/cache.js'
 import { detectCapabilities } from '../homey/registry.js'
+import { shouldOfferCapability } from '../homey/types.js'
 import type { CapabilityRegistry, HomeyConnection } from '../homey/types.js'
 import type { Logger } from '../util/log.js'
 import { logger as defaultLogger } from '../util/log.js'
@@ -203,11 +204,24 @@ async function registerToolModules(server: McpServer, context: ServerContext): P
   register('flowcards', flowCards.registerFlowCardTools)
 
   // Advanced Flow is both a firmware feature and a paid unlock on the older
-  // hardware, so its tools are registered only where the probe actually found
-  // the route. A tool that is absent is a much clearer answer to the model than
-  // a tool that is always present and always fails.
-  if (context.capabilities.hardware.advancedFlow) {
+  // hardware, so its tools are left out where the probe found the route absent.
+  // A tool that is absent is a much clearer answer to the model than a tool that
+  // is always present and always fails.
+  //
+  // Only that verdict closes the door, which is why this asks
+  // `shouldOfferCapability` rather than testing the value for truth. The probe
+  // runs once, at startup, on a hub that rate limits its own local API, so a
+  // probe that merely failed says nothing about the hardware; refusing to
+  // register on it would hide working tools for the life of the process, and a
+  // real call reports the real, current reason far better than a missing tool.
+  const advancedFlow = context.capabilities.hardware.advancedFlow
+  if (shouldOfferCapability(advancedFlow)) {
     register('advancedflows', flows.registerAdvancedFlowTools)
+    if (advancedFlow === null) {
+      context.logger.info(
+        'Advanced flow tools were registered although the capability probe did not settle whether this Homey has Advanced Flows: an unconfirmed probe is not a verdict about the hardware',
+      )
+    }
   } else {
     context.logger.info('Advanced flow tools were not registered: this Homey does not offer Advanced Flows')
   }

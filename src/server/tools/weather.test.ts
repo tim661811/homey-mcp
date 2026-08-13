@@ -467,6 +467,19 @@ describe('homey_weather', () => {
     expect(failure(result)['reason']).toBe('unsupported_hardware')
   })
 
+  it('reads the weather anyway when the probe merely failed', async () => {
+    // A probe that failed is not a verdict about the hub: it runs once at
+    // startup, on hardware that rate limits its own local API. Answering
+    // "unsupported hardware" to it reported a permanent limit nothing measured,
+    // and switched the outdoor reading off for the life of the process.
+    const { tools } = createHarness({ weatherProbe: probe('failed', `GET ${WEATHER_PATH}`) })
+
+    const result = await callWeather(tools)
+
+    expect(result.isError).not.toBe(true)
+    expect(section(result, 'current')['temperature']).toBeDefined()
+  })
+
   it('separates a permissions problem from a hardware one', async () => {
     const { tools } = createHarness({ weatherProbe: probe('forbidden', `GET ${WEATHER_PATH}`) })
 

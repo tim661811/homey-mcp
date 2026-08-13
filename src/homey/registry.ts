@@ -13,7 +13,12 @@
 // own flows.
 
 import { classifyError, HomeyMcpError, isHomeyMcpError } from './errors.js'
-import type { CapabilityProbeOutcome, CapabilityRegistry, HomeyConnection } from './types.js'
+import type {
+  CapabilityProbeOutcome,
+  CapabilityRegistry,
+  CapabilitySupport,
+  HomeyConnection,
+} from './types.js'
 import type { Logger } from '../util/log.js'
 
 export interface DetectCapabilitiesOptions {
@@ -165,8 +170,9 @@ export async function detectCapabilities(
       // own local API, so a probe can fail on a feature that works; reporting
       // that as unavailable turned one bad moment into a permanent claim about
       // the hardware.
+      const reason = endSentence(outcome.detail ?? '')
       notes.push(
-        `Could not determine whether this Homey offers ${probe.description}: ${outcome.detail ?? 'the probe failed'}. That is not a verdict about the hardware, and the probe only runs at startup, so restart this server to try again.`,
+        `Could not determine whether this Homey offers ${probe.description}: ${reason === '' ? 'the probe failed.' : reason} That is not a verdict about the hardware, and the probe only runs at startup, so restart this server to try again.`,
       )
     }
 
@@ -179,10 +185,10 @@ export async function detectCapabilities(
 
   const registry: CapabilityRegistry = {
     hardware: {
-      advancedFlow: isOffered(probes['advancedFlow']),
-      energyReports: isOffered(probes['energyReports']),
-      moods: isOffered(probes['moods']),
-      insights: isOffered(probes['insights']),
+      advancedFlow: probedSupport(probes['advancedFlow']),
+      energyReports: probedSupport(probes['energyReports']),
+      moods: probedSupport(probes['moods']),
+      insights: probedSupport(probes['insights']),
     },
     probedAt: now().toISOString(),
     notes,
@@ -279,29 +285,41 @@ function managers(connection: HomeyConnection): HomeyManagers {
 }
 
 /**
- * Whether the tools that depend on a capability are still worth offering.
+ * What one probe outcome says about the hardware.
  *
- * This is not the same question as "did the probe succeed", and reading it as
- * that question was a bug. These four booleans gate tool registration, the
- * registry is built once at startup and never rebuilt, and this hub rate limits
- * its own local API, so a single probe turned away at startup used to hide a
- * feature for the entire life of the process and tell the model the hardware
- * cannot do it. That is a permanent lie built out of one bad moment.
+ * Four probe statuses collapse onto three answers, and the third one has to
+ * survive the collapse. `available` and `unsupported` are verdicts about the
+ * hub. `forbidden` is a fact about this session, `failed` is a fact about one
+ * moment on a hub that rate limits its own local API, and a missing outcome
+ * means no probe ran: none of those three establish anything about the
+ * hardware, so all three answer `null` rather than picking a side.
  *
- * So only a verdict about the hardware closes the door, and `unsupported` is the
- * only outcome that is one. A probe that failed, and a probe the session was not
- * allowed to make, both mean "could not determine": the tools stay registered
- * and a real call then reports the real, current reason, which is far more
- * useful than a tool that is mysteriously absent. Anything that needs to tell
- * available apart from unconfirmed reads `probes[name].status`, which keeps all
- * four outcomes, and the notes above say which it was.
+ * This used to answer a boolean meaning "not proven absent", which made
+ * `hardware.energyReports` come back true on a hub whose report routes answer a
+ * clean 404, purely because the probe never got through. The registry is built
+ * once and never rebuilt, so that claim then stood for the life of the process.
+ * The gating decision that boolean was really carrying now lives in
+ * `shouldOfferCapability`, where it reads as the separate question it is.
  */
-function isOffered(outcome: CapabilityProbeOutcome | undefined): boolean {
-  // No outcome means no probe ran at all, which is not evidence of anything.
-  // Left as not offered, because a capability nothing ever checked should not be
-  // advertised on the strength of a missing record.
-  if (outcome === undefined) return false
-  return outcome.status !== 'unsupported'
+function probedSupport(outcome: CapabilityProbeOutcome | undefined): CapabilitySupport {
+  if (outcome === undefined) return null
+  if (outcome.status === 'available') return true
+  if (outcome.status === 'unsupported') return false
+  return null
+}
+
+/**
+ * Ends a borrowed sentence exactly once.
+ *
+ * The detail handed in is the hub's own message and it already ends in a full
+ * stop, so composing a longer sentence around it printed "if it keeps
+ * happening.. That is not a verdict". The punctuation is dropped here rather
+ * than at the source, because the source is an error message that reads
+ * correctly on its own and the note is what adds the sentence after it.
+ */
+function endSentence(detail: string): string {
+  const trimmed = detail.replace(/[.\s]+$/u, '')
+  return trimmed === '' ? '' : `${trimmed}.`
 }
 
 function statusCodeOf(error: HomeyMcpError): number | null {

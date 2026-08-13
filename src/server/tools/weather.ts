@@ -497,9 +497,16 @@ function assertWeatherSupported(context: ServerContext): void {
     )
   }
 
-  throw new HomeyMcpError(
-    'unsupported_hardware',
-    'This Homey did not answer the weather route when the server probed it, so outdoor conditions are not available here. Run homey_doctor for the probe detail.',
-    { probe },
-  )
+  if (probe.status === 'unsupported') {
+    throw new HomeyMcpError(
+      'unsupported_hardware',
+      'This Homey answered that it has no weather route when the server probed it, so outdoor conditions are not available here. Run homey_doctor for the probe detail.',
+      { probe },
+    )
+  }
+
+  // A probe that merely failed settles nothing: it runs once at startup, on a
+  // hub that rate limits its own local API, so reporting it as a hardware limit
+  // stated something no measurement established. The call goes through and the
+  // hub answers with its own current reason.
 }

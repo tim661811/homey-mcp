@@ -107,6 +107,26 @@ describe('buildServerInstructions', () => {
       expect(instructions).toContain('A flow card id is called "cardId" on every tool that takes one')
     })
 
+    it('names the tool a model meets the card id on first among the tools that share the name', () => {
+      // Step 2 of the workflow above is homey_flowcards_search, so leaving it
+      // out of the list of tools that call the value "cardId" left the one
+      // place a model looks first unmentioned.
+      const instructions = build()
+
+      const line = instructions.split('\n').find((candidate) => candidate.startsWith('5. A card id is called'))
+      expect(line).toContain('homey_flowcards_search')
+    })
+
+    it('separates the declared argument list from the values that fill it', () => {
+      // Two words a caller meets one after the other: "arguments" is the
+      // schema, "args" is what you set. One word for both shapes is what this
+      // line exists to prevent.
+      const instructions = build()
+
+      expect(instructions).toContain('"arguments" on both "homey_flowcards_search"')
+      expect(instructions).toContain('"args" is always the other thing')
+    })
+
     it('points from a device straight at its own history through logId', () => {
       const instructions = build()
 
@@ -235,7 +255,52 @@ describe('buildServerInstructions', () => {
       expect(line).toContain('settled')
     })
 
-    it('says a registry with no probe detail cannot tell the two apart', () => {
+    // The registration gate asks shouldOfferCapability, so an unsettled probe
+    // registers the advanced flow tools. This line has to agree with it: it
+    // told the model the tools were not registered in every branch except
+    // "available", which contradicted the tool list the same server sent.
+    it('does not claim the advanced flow tools are absent when the gate registered them', () => {
+      for (const status of ['failed', 'forbidden'] as const) {
+        const line = lineFor(
+          build(withProbes({ advancedFlow: outcome(status, 'flow.getAdvancedFlows') })),
+          'Advanced Flows (the visual, multi-branch kind)',
+        )
+
+        expect(line).toContain('unconfirmed')
+        expect(line).not.toContain('not registered')
+        expect(line).toContain('registered anyway')
+      }
+    })
+
+    it('still says the advanced flow tools are absent when the hub answered that it lacks them', () => {
+      const line = lineFor(build(), 'Advanced Flows (the visual, multi-branch kind)')
+
+      expect(line).toContain('not registered in this session')
+    })
+
+    it('says a registry that established nothing cannot tell the two apart', () => {
+      // A registry whose entries are null and which carries no probe detail
+      // knows nothing at all. The line used to open with "not available", which
+      // is the direction a model acts on by giving up, and which states a
+      // verdict about someone's hardware that no measurement supports.
+      const line = lineFor(
+        build({
+          hardware: { advancedFlow: null, energyReports: null, moods: null, insights: null },
+          probedAt: '2026-08-13T08:00:00.000Z',
+          notes: [],
+        }),
+        'Sensor and energy history (Insights)',
+      )
+
+      expect(line).toContain('unconfirmed')
+      expect(line).toContain('no probe detail')
+      expect(line).not.toContain('not available')
+    })
+
+    // The registry entries carry three answers where the probe outcome carries
+    // four, so a registry with no probe detail still has to be read for what it
+    // says rather than for whether it is truthy.
+    it('reads a settled false as settled even with no probe detail behind it', () => {
       const line = lineFor(
         build({
           hardware: { advancedFlow: false, energyReports: false, moods: false, insights: false },
@@ -245,7 +310,28 @@ describe('buildServerInstructions', () => {
         'Sensor and energy history (Insights)',
       )
 
-      expect(line).toContain('no probe detail')
+      expect(line).toContain('not available on this hardware')
+      expect(line).toContain('settled')
+    })
+
+    it('never reports a capability as available on the strength of an unsettled probe', () => {
+      // The measured residual: with every probe lost to a dropped connection the
+      // registry answered true, and this line then told the model the hub has
+      // historical energy reports on hardware whose report routes answer a clean
+      // 404. Both halves are pinned here, the entry and the sentence.
+      const instructions = build({
+        hardware: { advancedFlow: null, energyReports: null, moods: null, insights: null },
+        probedAt: '2026-08-13T08:00:00.000Z',
+        notes: [],
+        probes: {
+          energyReports: outcome('failed', 'GET /api/manager/energy/reports/available', 'Homey answered with an internal error.'),
+          insights: outcome('failed', 'insights.getLogs', 'Homey answered with an internal error.'),
+        },
+      })
+      const line = lineFor(instructions, 'Historical energy reports')
+
+      expect(line).toContain('unconfirmed')
+      expect(line).not.toMatch(/Historical energy reports: available/)
       expect(line).not.toContain('not available on this hardware')
     })
   })

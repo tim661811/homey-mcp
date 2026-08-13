@@ -129,7 +129,11 @@ export function registerInsightsTools(server: McpServer, context: ServerContext)
 
         const structuredContent = {
           query: query === '' ? null : query,
-          matchCount: scored.length,
+          // `totalMatches`, the name homey_devices_search, homey_flows_list and
+          // both flow card lists already answer with for this same number. It
+          // was `matchCount` here, a fifth tool answering one question in a
+          // fourth spelling.
+          totalMatches: scored.length,
           returnedCount: candidates.length,
           truncated: scored.length > candidates.length,
           totalLogCount: logs.all.length,
@@ -575,8 +579,11 @@ function assertInsightsSupported(context: ServerContext): void {
   const probe = context.capabilities.probes?.['insights']
 
   if (probe === undefined) {
-    // No probe detail was recorded, so the registry's boolean is all there is.
-    if (context.capabilities.hardware.insights) return
+    // No probe detail was recorded, so the registry's own answer is all there
+    // is. Only its `false` is a verdict about the hub: `null` means nothing
+    // established it either way, and refusing the call on that would state a
+    // hardware limit nobody measured.
+    if (context.capabilities.hardware.insights !== false) return
     throw new HomeyMcpError(
       'unsupported_hardware',
       'This Homey did not answer the Insights routes when the server probed it, so sensor history is not available here. Run homey_doctor for the probe detail.',

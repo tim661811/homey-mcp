@@ -27,7 +27,18 @@ import type { AdvancedNode, CanonicalAdvancedFlow } from './advanced.js'
 import { ADVANCED_NODE_TYPES, CARD_BEARING_NODE_TYPES, isValidNodeKey, outgoingTargets } from './advanced.js'
 
 export interface ValidationProblem {
-  /** Dotted path into the flow, for example `actions[1].args.text`. */
+  /**
+   * Dotted path into the flow AS THE CALLER SENT IT, for example
+   * `actions[1].args.text`.
+   *
+   * Every segment has to name a field of the tool's own input schema, not the
+   * internal canonical model's. The two disagree on three words: the model
+   * calls a card's id `id`, `delay` and `duration`, while homey_flow_create,
+   * homey_flow_update and homey_flow_validate take `cardId`, `delaySeconds` and
+   * `durationSeconds`. Emitting the internal spelling sent a caller reading the
+   * path to fix the problem looking for a field that is not in the object it
+   * sent.
+   */
   path: string
   problem: string
   suggestion?: string
@@ -84,8 +95,8 @@ export function validateFlow(flow: CanonicalFlow, context: ValidationContext): V
   flow.actions.forEach((action, index) => {
     validateCard(action, 'action', `actions[${index}]`, context, problems)
     validateActionGroup(action, `actions[${index}]`, problems)
-    validateInterval(action.delay, `actions[${index}].delay`, problems)
-    validateInterval(action.duration, `actions[${index}].duration`, problems)
+    validateInterval(action.delay, `actions[${index}].delaySeconds`, problems)
+    validateInterval(action.duration, `actions[${index}].durationSeconds`, problems)
   })
 
   if (flow.actions.length === 0) {
@@ -111,7 +122,7 @@ function validateCard(
 ): void {
   if (!card.id.startsWith('homey:')) {
     problems.push({
-      path: `${path}.id`,
+      path: `${path}.cardId`,
       problem: `"${card.id}" is not a flow card id.`,
       suggestion: 'A card id looks like homey:device:<uuid>:on or homey:manager:notifications:create_notification. Find one with homey_flowcards_search.',
     })
@@ -126,7 +137,7 @@ function validateCard(
     const otherKinds = context.cards.findById(card.id)
     if (otherKinds.length > 0) {
       problems.push({
-        path: `${path}.id`,
+        path: `${path}.cardId`,
         // One title with every kind after it read "X is a trigger and a action
         // card", which names one card and claims both meanings for it. Each
         // match gets its own title here, and the article follows the kind.
@@ -142,7 +153,7 @@ function validateCard(
     }
 
     problems.push({
-      path: `${path}.id`,
+      path: `${path}.cardId`,
       problem: `this Homey has no flow card "${card.id}". The hub would store the flow anyway and show the card as "NO CARD" in the app.`,
       suggestion: `Search for the card you meant with homey_flowcards_search, filtering by kind "${kind}".`,
     })
@@ -151,7 +162,7 @@ function validateCard(
 
   if (descriptor.deprecated) {
     problems.push({
-      path: `${path}.id`,
+      path: `${path}.cardId`,
       problem: `"${descriptor.title}" is deprecated. It still works, but the app that owns it may drop it.`,
     })
   }
@@ -514,7 +525,7 @@ function validateAdvancedNode(
 
   if (CARD_BEARING_NODE_TYPES.includes(node.type)) {
     if (node.cardId === undefined || node.cardId === '') {
-      problems.push({ path: `${path}.id`, problem: `a ${node.type} card needs a flow card id.` })
+      problems.push({ path: `${path}.cardId`, problem: `a ${node.type} card needs a flow card id.` })
     } else {
       const kind: FlowCardKind = node.type === 'trigger' ? 'trigger' : node.type === 'condition' ? 'condition' : 'action'
       validateCard(
@@ -526,7 +537,7 @@ function validateAdvancedNode(
       )
     }
   } else if (node.cardId !== undefined) {
-    problems.push({ path: `${path}.id`, problem: `a ${node.type} card carries no flow card, so it should have no id.` })
+    problems.push({ path: `${path}.cardId`, problem: `a ${node.type} card carries no flow card, so it should have no id.` })
   }
 
   if (node.type === 'delay' && (node.delaySeconds === null || node.delaySeconds === undefined)) {

@@ -101,6 +101,17 @@ locations are checked. So:
 - This server only ever **reads** that file. It never writes it, and it never
   drives the CLI in the background. `homey login` and `homey select` are run by
   `setup` only, with you watching.
+- A session in it lasts exactly **24 hours**, so a server left running outlives
+  its own credential every day. It does not stop when that happens: the first
+  call Homey refuses makes it read the credential source again and sign in once
+  more, which usually finds the newer session the CLI has already written there.
+  So leaving it running is the intended way to use it, and a session expiring is
+  not a reason to restart anything. What it will not do is repeat the call it was
+  in the middle of when the session died, unless that call only read something:
+  a refused write may still have been carried out by Homey, so it is reported
+  back with the session renewed and you decide whether to send it again. If
+  nothing usable is left in the file, the failure says so and names the command
+  that fixes it.
 - Five things are read out of it and nothing else: the two tokens, which Homey is
   active, and the session's expiry and scopes. The tokens authenticate to your
   own Homey and, when no local address answers, to `api.athom.com`. Nothing in

@@ -11,9 +11,29 @@
 // Homey.
 //
 // They are also read in sequence, so one concept keeps one name across all
-// three. A card id is `cardId` everywhere it is an input, because a caller
-// carries it straight from one tool to the next and a rename in between is a
-// failed call, not a style preference.
+// three, on the way out as well as on the way in. A card id is `cardId`
+// everywhere, because a caller carries it straight from one tool to the next
+// and a rename in between is a failed call, not a style preference. Search is
+// the first step the server instructions send a model to, so it is the one
+// place where a different spelling costs the most.
+//
+// Three names carry the whole vocabulary and none of them overlap:
+//
+//   - `arguments` is the list of arguments a card declares. Search reports the
+//     name and the type of each; describe reports the same list with the rest
+//     of the schema on every entry; the wrong-argument error reports the same
+//     list to say what the card does take.
+//   - `argument` is one entry of that list, which is what
+//     homey_flowcard_autocomplete resolves.
+//   - `args` is never the list. It is the VALUES, keyed by argument name, that
+//     a flow card carries, and it is spelled that way on the flow authoring
+//     tools' input and on every card they report back.
+//
+// The list used to be `argNames` on search, `args` on describe and
+// `availableArguments` in the error. The middle one is the reason this matters
+// beyond tidiness: `args` on a described card was an array of schemas while
+// `args` on a card being built is an object of values, so one name named two
+// shapes on the two tools a caller uses back to back.
 
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
@@ -69,7 +89,8 @@ export function registerFlowCardTools(server: McpServer, context: ServerContext)
       description: [
         'Finds the flow cards available on this Homey. Flow cards are the building blocks of a flow: a trigger card starts it, condition cards decide whether it continues, and action cards do something.',
         'This Homey exposes hundreds of cards, so at least one filter is required: a search term, a device, an owning app or manager, or an owner uri. An unfiltered call is refused.',
-        'Results carry only enough to choose a card. Call homey_flowcard_describe for the full argument schema before using one in a flow.',
+        'Results carry only enough to choose a card: the id under cardId, which every other flow tool takes under that same name, and the arguments the card declares under arguments, with the name and type of each.',
+        'Call homey_flowcard_describe with that cardId for the rest of each argument, which is what you need before using the card in a flow.',
       ].join(' '),
       inputSchema: {
         query: z.string().optional().describe('Words to look for in the card title, its short id, its hint or its owner name. For example "turn on", "motion", "notification".'),
@@ -159,6 +180,8 @@ export function registerFlowCardTools(server: McpServer, context: ServerContext)
       title: 'Describe one Homey flow card',
       description: [
         'Returns everything needed to use one flow card: every argument with its type and allowed values, the values the card emits for later cards to read, whether it accepts a dropped value, and whether it is deprecated.',
+        'The arguments come back under arguments, the same field homey_flowcards_search reports with only the name and type of each; here every entry additionally carries its title, whether it is required, its allowed values and range, and how to resolve it.',
+        'The values you then set on the card are sent as args, keyed by those argument names. arguments is the schema, args is what you fill in.',
         'Call this for each card before building a flow. Guessing an argument name produces a flow that saves and then does nothing.',
       ].join(' '),
       inputSchema: {
@@ -229,7 +252,7 @@ export function registerFlowCardTools(server: McpServer, context: ServerContext)
           .enum(CARD_KINDS)
           .optional()
           .describe('Which meaning of the card id you want, for the few ids that name a card of more than one kind. Only needed when the tool asks for it.'),
-        argument: z.string().describe('The name of the argument to resolve, taken from homey_flowcard_describe.'),
+        argument: z.string().describe('The name of the argument to resolve, taken from the arguments list on homey_flowcard_describe or homey_flowcards_search.'),
         query: z.string().optional().describe('What to search for. An empty string lists everything the argument accepts.'),
         args: z
           .record(z.string(), z.unknown())
@@ -269,7 +292,12 @@ export function registerFlowCardTools(server: McpServer, context: ServerContext)
         const argument = card.args.find((entry) => entry.name === input.argument)
         if (argument === undefined) {
           throw new HomeyMcpError('invalid_request', `"${card.title}" has no argument called "${input.argument}".`, {
-            availableArguments: card.args.map((entry) => ({ name: entry.name, type: entry.type })),
+            // `arguments`, the same field under which search and describe report
+            // the same list, and in the same shape. This error is where a caller
+            // goes to find the name it should have used, so answering with a
+            // fourth spelling of "the card's arguments" is the least helpful
+            // moment to do it.
+            arguments: card.args.map((entry) => ({ name: entry.name, type: entry.type })),
           })
         }
 
@@ -308,6 +336,12 @@ export function registerFlowCardTools(server: McpServer, context: ServerContext)
             resolvable: true,
             cardId: card.id,
             argument: describedArgument,
+            // `totalMatches`, the name homey_flowcards_search, homey_flows_list
+            // and homey_devices_search already report this number under. It was
+            // missing entirely here, so `truncated: true` said the list was cut
+            // short without saying what it was cut short of, and the only place
+            // the total appeared was the sentence a person reads.
+            totalMatches: results.length,
             truncated: results.length > page.length,
             // Named `value` rather than `result` to say plainly what to do with
             // it: this exact object is what the argument is set to.
@@ -440,12 +474,21 @@ function scoreCard(card: FlowCardDescriptor, terms: string[]): number {
 
 function summariseCard(card: FlowCardDescriptor): Record<string, unknown> {
   const summary: Record<string, unknown> = {
-    id: card.id,
+    // `cardId`, not `id`. Search is the first tool of the three, so this is the
+    // field a model reads before it has read anything else, and the value goes
+    // straight into `cardId` on describe, on autocomplete and on every card the
+    // flow authoring tools accept. Reporting it as `id` here meant the very
+    // first handoff of the documented sequence was the one that needed a
+    // rename in between.
+    cardId: card.id,
     kind: card.kind,
     title: card.title,
     ownerUri: card.ownerUri,
     ownerName: card.ownerName,
-    argNames: card.args.map((argument) => argument.name),
+    // The same field name and the same element shape homey_flowcard_describe
+    // answers with, so `arguments[0].name` reads the same on both. Describe
+    // adds the rest of each argument's schema; nothing here is dropped there.
+    arguments: card.args.map((argument) => ({ name: argument.name, type: argument.type })),
   }
   if (card.deprecated) summary['deprecated'] = true
   if (card.advanced) summary['advanced'] = true
@@ -457,7 +500,10 @@ function describeCard(card: FlowCardDescriptor): Record<string, unknown> {
   const nodeTokenNamespace = nodeTokenNamespaceOf(card.kind)
 
   return {
-    id: card.id,
+    // `cardId`, matching homey_flowcards_search above and the input of every
+    // tool this card can be carried into. A described card is read and then
+    // used, so this is the second half of the same handoff.
+    cardId: card.id,
     kind: card.kind,
     title: card.title,
     // The `[[argument]]` placeholders show where each argument lands in the
@@ -472,7 +518,11 @@ function describeCard(card: FlowCardDescriptor): Record<string, unknown> {
     advanced: card.advanced,
     supportsDuration: raw?.['duration'] === true,
     acceptedDropTokenTypes: normaliseDropTokenTypes(raw?.['droptoken']),
-    args: card.args.map((argument) => {
+    // `arguments`, not `args`. The card's declared schema and the values a card
+    // carries are two different things, and while both were called `args` the
+    // two tools a caller uses back to back named an array of schemas and an
+    // object of values with one word.
+    arguments: card.args.map((argument) => {
       const argumentRaw = argument.raw as Record<string, unknown> | null
       return {
         name: argument.name,

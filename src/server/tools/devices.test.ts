@@ -507,6 +507,35 @@ describe('homey_device_get', () => {
     expect(typeof device['insightsUnavailableReason']).toBe('string')
   })
 
+  it('still lists a device\'s history when the Insights probe never settled the question', async () => {
+    // The probe answers three things, and only `false` is a verdict about the
+    // hub. A probe that failed or was refused leaves this null, and reading the
+    // value for truth turned that into a refusal with a sentence about the
+    // probe, hiding history the hub answers for perfectly well. The catalogue
+    // read below is the honest way to find out.
+    const harness = createHarness({
+      getDevices: async () => withoutTheDeviceInsightsArray(homeFixture.devices),
+      capabilities: { ...CAPABILITY_REGISTRY, hardware: { ...CAPABILITY_REGISTRY.hardware, insights: null } },
+    })
+    const result = await takeTool(harness, 'homey_device_get').handler({ device: 'Bedroom radiator' })
+
+    const device = structuredOf(result)['device'] as Record<string, unknown>
+    expect(device['insightsUnavailableReason']).toBeUndefined()
+    expect((device['insights'] as unknown[]).length).toBe(2)
+  })
+
+  it('says the hub has no Insights only when the hub answered that it has none', async () => {
+    const harness = createHarness({
+      getDevices: async () => withoutTheDeviceInsightsArray(homeFixture.devices),
+      capabilities: { ...CAPABILITY_REGISTRY, hardware: { ...CAPABILITY_REGISTRY.hardware, insights: false } },
+    })
+    const result = await takeTool(harness, 'homey_device_get').handler({ device: 'Bedroom radiator' })
+
+    const device = structuredOf(result)['device'] as Record<string, unknown>
+    expect(device['insights']).toEqual([])
+    expect(String(device['insightsUnavailableReason'])).toContain('does not offer the Insights routes')
+  })
+
   it('refuses to guess when a name matches several devices', async () => {
     const harness = createHarness()
     const result = await takeTool(harness, 'homey_device_get').handler({ device: 'o' })

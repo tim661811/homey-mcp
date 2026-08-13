@@ -13,7 +13,8 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { createHomeCache } from '../../homey/cache.js'
 import { createLogger } from '../../util/log.js'
 import type { AskOptions, AskResult, ServerContext } from '../context.js'
-import type { CapabilityRegistry, HomeyConnection } from '../../homey/types.js'
+import { shouldOfferCapability } from '../../homey/types.js'
+import type { CapabilityRegistry, CapabilitySupport, HomeyConnection } from '../../homey/types.js'
 import { registerAdvancedFlowTools, registerFlowTools } from './flows.js'
 
 interface HomeFixture {
@@ -73,15 +74,20 @@ interface HarnessOptions {
   /** Lets a test make the fake hub store something other than what it was sent. */
   mangleOnWrite?: (flow: Record<string, unknown>) => Record<string, unknown>
   /**
-   * A Homey where the Advanced Flow probe came back negative.
+   * What the Advanced Flow probe established, in all three of its answers.
    *
-   * The advanced tools are then not registered at all, exactly as createServer
-   * decides it, and the cache is built without the capability registry so the
-   * advanced flows the hub reports are still resolvable. That is the state the
-   * suggestion has to survive: a tool that is not in the model's list must not
-   * be the thing it is told to use.
+   * `false` is a Homey where the probe came back negative: the advanced tools
+   * are then not registered at all, exactly as createServer decides it, and the
+   * cache is built without the capability registry so the advanced flows the
+   * hub reports are still resolvable. That is the state the suggestion has to
+   * survive, because a tool that is not in the model's list must not be the
+   * thing it is told to use.
+   *
+   * `null` is a probe that never settled the question, and it registers the
+   * tools exactly as `true` does. Both directions matter here: the suggestion
+   * has to follow the registration rather than the raw value.
    */
-  advancedFlowUnlocked?: boolean
+  advancedFlowSupport?: CapabilitySupport
 }
 
 interface Harness {
@@ -208,14 +214,17 @@ function createHarness(options: HarnessOptions = {}): Harness {
   }
 
   const logger = createLogger({ level: 'silent' })
-  const advancedFlowUnlocked = options.advancedFlowUnlocked !== false
-  const capabilities: CapabilityRegistry = advancedFlowUnlocked
-    ? CAPABILITY_REGISTRY
-    : { ...CAPABILITY_REGISTRY, hardware: { ...CAPABILITY_REGISTRY.hardware, advancedFlow: false } }
+  const advancedFlowSupport: CapabilitySupport =
+    options.advancedFlowSupport === undefined ? true : options.advancedFlowSupport
+  const advancedFlowOffered = shouldOfferCapability(advancedFlowSupport)
+  const capabilities: CapabilityRegistry = {
+    ...CAPABILITY_REGISTRY,
+    hardware: { ...CAPABILITY_REGISTRY.hardware, advancedFlow: advancedFlowSupport },
+  }
 
   const context: ServerContext = {
     connection,
-    cache: createHomeCache(connection, advancedFlowUnlocked ? { logger, capabilities } : { logger }),
+    cache: createHomeCache(connection, advancedFlowOffered ? { logger, capabilities } : { logger }),
     capabilities,
     logger,
     ask: async (askOptions) => {
@@ -246,9 +255,10 @@ function createHarness(options: HarnessOptions = {}): Harness {
   } as unknown as McpServer
 
   registerFlowTools(server, context)
-  // Mirrors createServer: the advanced tools exist only where the probe found
-  // Advanced Flow.
-  if (capabilities.hardware.advancedFlow) registerAdvancedFlowTools(server, context)
+  // Mirrors createServer: the advanced tools exist wherever the probe did not
+  // establish that this hub lacks Advanced Flow, which includes a probe that
+  // never settled it.
+  if (advancedFlowOffered) registerAdvancedFlowTools(server, context)
 
   return { tools, flows, advancedFlows, folders, writes, queued, askedQuestions }
 }
@@ -490,6 +500,61 @@ describe('homey_flow_validate', () => {
     expect(reported).toContain('names a trigger card')
     expect(reported).toContain('can be used as a condition')
     expect(reported).not.toContain('has no flow card')
+  })
+
+  it('points every problem at a field this tool actually accepts', async () => {
+    // The validator works on the internal canonical model, which spells three
+    // fields differently from the tool schema: `id`, `delay` and `duration`
+    // against `cardId`, `delaySeconds` and `durationSeconds`. Emitting the
+    // internal spelling in the path sent a caller reading it straight to a
+    // field name that is not in the object it sent, and zod had already
+    // stripped it on the way in.
+    const harness = createHarness()
+    const validate = takeTool(harness, 'homey_flow_validate')
+    const result = await validate.handler({
+      name: 'Every kind of wrong',
+      trigger: { cardId: 'not-a-card-id' },
+      actions: [{ cardId: NOTIFY_ACTION, args: { text: 'x' }, delaySeconds: -1, durationSeconds: -1 }],
+    })
+
+    const problems = structuredOf(result)['problems'] as Array<Record<string, unknown>>
+    const paths = problems.map((problem) => String(problem['path']))
+    expect(paths).toContain('trigger.cardId')
+    expect(paths).toContain('actions[0].delaySeconds')
+    expect(paths).toContain('actions[0].durationSeconds')
+
+    // Asked of the tool's own schema rather than of a list written out here, so
+    // this keeps biting if either side is renamed again. zod strips whatever
+    // the schema does not declare, so a field that survives the parse is a
+    // field the tool takes.
+    const cardShape = z.object(validate.config.inputSchema as z.ZodRawShape)
+    const echoed = cardShape.parse({
+      name: 'x',
+      trigger: { cardId: DOOR_TRIGGER },
+      actions: [
+        {
+          cardId: NOTIFY_ACTION,
+          args: { text: 'x' },
+          group: 'then',
+          inverted: false,
+          droptoken: null,
+          delaySeconds: 1,
+          durationSeconds: 1,
+        },
+      ],
+    }) as { actions: Array<Record<string, unknown>> }
+    const acceptedCardFields = new Set(Object.keys(echoed.actions[0]!))
+    expect(acceptedCardFields.has('cardId')).toBe(true)
+
+    for (const path of paths) {
+      // Only the segment naming a field of a card is checked. An `args.<name>`
+      // tail names an argument of that particular card, which is allowed to be
+      // absent from the input: that is exactly what "requires the argument"
+      // problems report.
+      const cardField = /^(?:trigger|conditions\[\d+\]|actions\[\d+\])\.([a-zA-Z]+)$/u.exec(path)?.[1]
+      if (cardField === undefined) continue
+      expect(acceptedCardFields.has(cardField)).toBe(true)
+    }
   })
 
   it('names the database constraint for a flow with no trigger', async () => {
@@ -880,7 +945,7 @@ describe('homey_flow_update', () => {
     // Advanced Flow is a separate purchase on this hardware, so the advanced
     // tools can be absent while advanced flows are not. Naming a tool the model
     // cannot see leaves it with nowhere to go.
-    const harness = createHarness({ advancedFlowUnlocked: false })
+    const harness = createHarness({ advancedFlowSupport: false })
     expect(harness.tools.has('homey_advancedflow_update')).toBe(false)
 
     const result = await takeTool(harness, 'homey_flow_update').handler({ flow: 'Attic door routine', confirm: true })
@@ -889,6 +954,23 @@ describe('homey_flow_update', () => {
     const reported = JSON.stringify(structuredOf(result))
     expect(reported).not.toContain('homey_advancedflow_update')
     expect(reported).toContain('Homey app')
+  })
+
+  it('names the advanced tool on a Homey whose probe never settled the question', async () => {
+    // The registration gate asks shouldOfferCapability, which offers the tools
+    // on an unsettled probe, so the suggestion has to agree with it. Reading
+    // the three-valued support for truth made this branch state that the hub
+    // does not have Advanced Flow while homey_advancedflow_update sat in the
+    // model's own tool list.
+    const harness = createHarness({ advancedFlowSupport: null })
+    expect(harness.tools.has('homey_advancedflow_update')).toBe(true)
+
+    const result = await takeTool(harness, 'homey_flow_update').handler({ flow: 'Attic door routine', confirm: true })
+
+    expect(result.isError).toBe(true)
+    const reported = JSON.stringify(structuredOf(result))
+    expect(reported).toContain('homey_advancedflow_update')
+    expect(reported).not.toContain('does not have Advanced Flow')
   })
 })
 

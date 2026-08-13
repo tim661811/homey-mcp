@@ -164,6 +164,12 @@ function cardsOf(result: CallToolResult): Array<Record<string, unknown>> {
   return structuredOf(result)['cards'] as Array<Record<string, unknown>>
 }
 
+/** The `details` a failed call carries, which is where a tool says what it would have accepted. */
+function detailsOf(result: CallToolResult): Record<string, unknown> {
+  const error = structuredOf(result)['error'] as Record<string, unknown> | undefined
+  return (error?.['details'] as Record<string, unknown> | undefined) ?? {}
+}
+
 describe('registration', () => {
   it('registers exactly the three discovery tools, all annotated read-only', () => {
     const harness = createHarness()
@@ -195,6 +201,68 @@ describe('registration', () => {
       expect(schemaKeys).not.toContain('id')
     }
   })
+
+  // The same rename, one step further along. The input side was settled while
+  // search still ANSWERED with `id`, so the first handoff of the sequence the
+  // server instructions prescribe (search, then describe) was the one that
+  // needed the caller to rename a field. This walks that sequence with no
+  // renaming at all: whatever search calls the identifier is passed under the
+  // name describe asks for.
+  it('carries the identifier straight from a search result into describe and autocomplete', async () => {
+    const harness = createHarness()
+
+    const found = await takeTool(harness, 'homey_flowcards_search').handler({ query: 'say something' })
+    const card = cardsOf(found)[0]
+    expect(card?.['cardId']).toBe('homey:app:com.example.cast:tts')
+
+    const described = await takeTool(harness, 'homey_flowcard_describe').handler({ cardId: card?.['cardId'] })
+    expect(described.isError).toBeFalsy()
+    const describedCard = structuredOf(described)['card'] as Record<string, unknown>
+    expect(describedCard['cardId']).toBe(card?.['cardId'])
+
+    const resolved = await takeTool(harness, 'homey_flowcard_autocomplete').handler({
+      cardId: describedCard['cardId'],
+      argument: 'device',
+    })
+    expect(resolved.isError).toBeFalsy()
+    expect(structuredOf(resolved)['cardId']).toBe(card?.['cardId'])
+  })
+
+  // Three tools answering with one card's argument list, and it was spelled
+  // three ways: `argNames` on search, `args` on describe (where `args` on a card
+  // being built means the VALUES, not the schema) and `availableArguments` in
+  // the error a caller reads precisely to find the name it should have used.
+  it('names a card\'s argument list "arguments" on search, on describe and in the wrong-argument error', async () => {
+    const harness = createHarness()
+
+    const found = await takeTool(harness, 'homey_flowcards_search').handler({ query: 'say something' })
+    const searched = cardsOf(found)[0]
+    expect(searched?.['arguments']).toEqual([
+      { name: 'device', type: 'autocomplete' },
+      { name: 'text', type: 'text' },
+    ])
+
+    const described = await takeTool(harness, 'homey_flowcard_describe').handler({
+      cardId: 'homey:app:com.example.cast:tts',
+    })
+    const describedCard = structuredOf(described)['card'] as Record<string, unknown>
+    const describedArguments = describedCard['arguments'] as Array<Record<string, unknown>>
+    expect(describedCard['args']).toBeUndefined()
+    // The same field name AND the same element shape, so one reader works on
+    // both: describe only adds to each entry.
+    expect(describedArguments.map((argument) => ({ name: argument['name'], type: argument['type'] }))).toEqual(
+      searched?.['arguments'],
+    )
+
+    const wrongArgument = await takeTool(harness, 'homey_flowcard_autocomplete').handler({
+      cardId: 'homey:app:com.example.cast:tts',
+      argument: 'speaker',
+    })
+    expect(wrongArgument.isError).toBe(true)
+    const errorDetails = detailsOf(wrongArgument)
+    expect(errorDetails['arguments']).toEqual(searched?.['arguments'])
+    expect(errorDetails['availableArguments']).toBeUndefined()
+  })
 })
 
 describe('homey_flowcards_search', () => {
@@ -211,23 +279,24 @@ describe('homey_flowcards_search', () => {
     const result = await takeTool(harness, 'homey_flowcards_search').handler({ query: 'notification' })
 
     const card = cardsOf(result)[0]
-    expect(Object.keys(card ?? {}).sort()).toEqual(['argNames', 'id', 'kind', 'ownerName', 'ownerUri', 'title'])
-    expect(card?.['id']).toBe('homey:manager:notifications:create_notification')
-    expect(card?.['argNames']).toEqual(['text'])
+    expect(Object.keys(card ?? {}).sort()).toEqual(['arguments', 'cardId', 'kind', 'ownerName', 'ownerUri', 'title'])
+    expect(card?.['cardId']).toBe('homey:manager:notifications:create_notification')
+    expect(card?.['id']).toBeUndefined()
+    expect(card?.['arguments']).toEqual([{ name: 'text', type: 'text' }])
   })
 
   it('finds a card by a word in its title and ranks the closest match first', async () => {
     const harness = createHarness()
     const result = await takeTool(harness, 'homey_flowcards_search').handler({ query: 'turn on or off' })
 
-    expect(cardsOf(result)[0]?.['id']).toBe('homey:device:aaaaaaaa-0001-4000-8000-000000000001:onoff')
+    expect(cardsOf(result)[0]?.['cardId']).toBe('homey:device:aaaaaaaa-0001-4000-8000-000000000001:onoff')
   })
 
   it('finds a card by the short id a model is likely to half-remember', async () => {
     const harness = createHarness()
     const result = await takeTool(harness, 'homey_flowcards_search').handler({ query: 'alarm contact true' })
 
-    expect(cardsOf(result)[0]?.['id']).toBe('homey:device:aaaaaaaa-0004-4000-8000-000000000004:alarm_contact_true')
+    expect(cardsOf(result)[0]?.['cardId']).toBe('homey:device:aaaaaaaa-0004-4000-8000-000000000004:alarm_contact_true')
   })
 
   // The wrong-kind diagnostic in flow validation quotes the id back and says to
@@ -240,7 +309,7 @@ describe('homey_flowcards_search', () => {
       query: 'homey:manager:notifications:create_notification',
     })
 
-    expect(cardsOf(result)[0]?.['id']).toBe('homey:manager:notifications:create_notification')
+    expect(cardsOf(result)[0]?.['cardId']).toBe('homey:manager:notifications:create_notification')
   })
 
   it('finds every card of an owner by the owner uri pasted as a query', async () => {
@@ -272,7 +341,7 @@ describe('homey_flowcards_search', () => {
     const harness = createHarness()
     const result = await takeTool(harness, 'homey_flowcards_search').handler({ query: 'alarm_contact_true' })
 
-    expect(cardsOf(result)[0]?.['id']).toBe('homey:device:aaaaaaaa-0004-4000-8000-000000000004:alarm_contact_true')
+    expect(cardsOf(result)[0]?.['cardId']).toBe('homey:device:aaaaaaaa-0004-4000-8000-000000000004:alarm_contact_true')
   })
 
   it('requires every search term to appear somewhere on the card', async () => {
@@ -313,8 +382,8 @@ describe('homey_flowcards_search', () => {
     const hidden = await takeTool(harness, 'homey_flowcards_search').handler({ query: 'turned on' })
     const shown = await takeTool(harness, 'homey_flowcards_search').handler({ query: 'turned on', includeDeprecated: true })
 
-    expect(cardsOf(hidden).map((card) => card['id'])).not.toContain('homey:device:aaaaaaaa-0001-4000-8000-000000000001:onoff_true')
-    expect(cardsOf(shown).map((card) => card['id'])).toContain('homey:device:aaaaaaaa-0001-4000-8000-000000000001:onoff_true')
+    expect(cardsOf(hidden).map((card) => card['cardId'])).not.toContain('homey:device:aaaaaaaa-0001-4000-8000-000000000001:onoff_true')
+    expect(cardsOf(shown).map((card) => card['cardId'])).toContain('homey:device:aaaaaaaa-0001-4000-8000-000000000001:onoff_true')
   })
 
   it('says when the answer was cut short', async () => {
@@ -335,7 +404,7 @@ describe('homey_flowcard_describe', () => {
     })
 
     const card = structuredOf(result)['card'] as Record<string, unknown>
-    const args = card['args'] as Array<Record<string, unknown>>
+    const args = card['arguments'] as Array<Record<string, unknown>>
     expect(args[0]).toMatchObject({ name: 'target_temperature', type: 'number', min: 4, max: 35, step: 0.5 })
   })
 
@@ -344,7 +413,7 @@ describe('homey_flowcard_describe', () => {
     const result = await takeTool(harness, 'homey_flowcard_describe').handler({ cardId: 'homey:app:com.example.cast:tts' })
 
     const card = structuredOf(result)['card'] as Record<string, unknown>
-    const args = card['args'] as Array<Record<string, unknown>>
+    const args = card['arguments'] as Array<Record<string, unknown>>
     expect(args.find((argument) => argument['name'] === 'device')?.['resolveWith']).toContain('homey_flowcard_autocomplete')
   })
 
@@ -691,6 +760,26 @@ describe('homey_flowcard_autocomplete', () => {
       type: 'flowcardaction',
       name: 'flow',
     })
+  })
+
+  // Every other list this server returns says how many things matched, under
+  // `totalMatches`, and this one said only that it had been cut short. A reader
+  // holding `truncated: true` and no total cannot tell whether it is missing one
+  // choice or two hundred, and the number was sitting in the sentence beside it
+  // the whole time.
+  it('reports how many choices matched under the same name every other list uses', async () => {
+    const harness = createHarness()
+    const result = await takeTool(harness, 'homey_flowcard_autocomplete').handler({
+      cardId: 'homey:app:com.example.cast:tts',
+      argument: 'device',
+      limit: 1,
+    })
+
+    const structured = structuredOf(result)
+    const choices = structured['choices'] as unknown[]
+    expect(structured['totalMatches']).toBe(flowFixture.autocompleteResults.length)
+    expect(choices).toHaveLength(1)
+    expect(structured['truncated']).toBe(true)
   })
 
   it('passes the arguments already chosen, for a choice that depends on an earlier one', async () => {

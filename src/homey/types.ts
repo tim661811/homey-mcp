@@ -90,6 +90,46 @@ export interface HomeyConnection {
 /** Why a probe answered the way it did. Kept so `doctor` can explain a false without guessing. */
 export type CapabilityProbeStatus = 'available' | 'unsupported' | 'forbidden' | 'failed'
 
+/**
+ * What the startup probe established about one capability of the hub.
+ *
+ * Three outcomes, and they are not interchangeable:
+ *
+ * - `true`: the hub answered the probe, so the feature is there.
+ * - `false`: the hub answered that the route is absent, so the feature is not
+ *   there and no retry can change that.
+ * - `null`: the probe did not settle it. It failed, or the session was not
+ *   allowed to make it, or no probe ran at all.
+ *
+ * `null` is not a shade of `false`, and it must never be rendered as either of
+ * the other two. This used to be a bare boolean carrying "not proven absent",
+ * which reported a capability as present on hardware that does not have it: with
+ * every probe failing at startup, `energyReports` came back true on a hub whose
+ * energy report routes answer a clean 404, and the tools and the model-facing
+ * instructions then repeated that claim for the life of the process. A probe
+ * runs once, at startup, on a hub that rate limits its own local API, so one bad
+ * moment must not become a permanent statement about someone's hardware in
+ * either direction.
+ *
+ * `render.ts`'s `formatValue` already prints `null` as "unknown", so a report
+ * that shows one of these reads honestly without knowing this rule.
+ */
+export type CapabilitySupport = boolean | null
+
+/**
+ * Whether the tools behind a capability are still worth offering.
+ *
+ * A different question from "does this hub have it", and answering it with the
+ * same value was the bug. Only a verdict about the hardware closes the door, so
+ * `null` keeps the tools registered: a real call then reports the real, current
+ * reason, which is far more useful to a model than a tool that is mysteriously
+ * absent. Anything that wants to tell "present" from "could not tell" reads the
+ * support value itself, or `probes[name].status` for the reason.
+ */
+export function shouldOfferCapability(support: CapabilitySupport): boolean {
+  return support !== false
+}
+
 export interface CapabilityProbeOutcome {
   status: CapabilityProbeStatus
   /** The call that was made, for example `flow.getAdvancedFlows`. */
@@ -100,11 +140,21 @@ export interface CapabilityProbeOutcome {
 }
 
 export interface CapabilityRegistry {
+  /**
+   * What the probe established about this hub, for the capabilities something
+   * other than their own tool has to branch on.
+   *
+   * Each entry is a claim about the hardware, so it carries `null` whenever the
+   * probe did not settle the question. Read `shouldOfferCapability` for a
+   * registration or gating decision rather than testing the value for truth: a
+   * bare `if (hardware.insights)` treats "could not tell" as "not there", and
+   * `if (!hardware.insights)` then states it out loud.
+   */
   hardware: {
-    advancedFlow: boolean
-    energyReports: boolean
-    moods: boolean
-    insights: boolean
+    advancedFlow: CapabilitySupport
+    energyReports: CapabilitySupport
+    moods: CapabilitySupport
+    insights: CapabilitySupport
   }
   probedAt: string
   notes: string[]
