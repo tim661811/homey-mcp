@@ -139,8 +139,35 @@ export function buildServerInstructions(options: BuildServerInstructionsOptions)
       // named that value differently. Saying it carries over closes the seam in
       // the one place a model reads before either tool description.
       '4. Resolve every argument whose "resolveWith" is not null, which covers "autocomplete" and "device" arguments alike: a device argument needs the same treatment as an autocomplete one, and "homey_flow_validate" rejects a bare device id. Call "homey_flowcard_autocomplete" with the same "cardId" and the argument name, pick a choice, and store that choice\'s whole "value" object as the argument value, not just its id.',
-      '5. Check the whole thing with "homey_flow_validate" before writing anything. It is a client-side check that costs nothing and catches the mistakes this firmware reports with misleading messages.',
-      '6. Create it with "homey_flow_create". A new flow is created disabled and in a folder named "AI", so nothing starts running the house the moment it is written. Tell the user where to find it and that they must enable it themselves.',
+      // The one value that travels through every step of this list, so it is
+      // worth saying once that it never changes name. It is "cardId" on all five
+      // tools that take it and on every card these tools hand back, so a card
+      // read out of a flow can be sent into another one unedited.
+      '5. A card id is called "cardId" everywhere: on "homey_flowcard_describe", on "homey_flowcard_autocomplete", on every card inside "homey_flow_validate", "homey_flow_create" and "homey_flow_update", and on every card these tools report back. Carry the value across unchanged rather than renaming it.',
+      '6. Check the whole thing with "homey_flow_validate" before writing anything. It is a client-side check that costs nothing and catches the mistakes this firmware reports with misleading messages.',
+      '7. Create it with "homey_flow_create". A new flow is created disabled and in a folder named "AI", so nothing starts running the house the moment it is written. Tell the user where to find it and that they must enable it themselves.',
+    ].join('\n'),
+  )
+
+  // Written once here rather than in fifteen tool descriptions, because every
+  // line below is about a value crossing FROM one tool INTO another and neither
+  // description is the place a reader looks for that. Each of these was a
+  // handoff that silently did not work: a card id that changed name between
+  // discovery and authoring, a device's Insights logs named in a shape the
+  // history tool does not accept, and a flow definition handed back for undo in
+  // a shape the create tool cannot read.
+  sections.push(
+    [
+      'Carrying a value from one tool into the next:',
+      '- A flow card id is called "cardId" on every tool that takes one and on every card any tool reports back. It never needs renaming in between.',
+      '- An Insights series is called "logId" on "homey_insights_search", on "homey_insights_query" and on the logs "homey_device_get" lists for a device. To ask for a device\'s own history, read its logs with "homey_device_get" and pass those logIds straight to "homey_insights_query".',
+      '- "homey_devices_search" reports a short "capabilitySummaries" per device: title, value, unit and whether it can be set. "homey_device_get" reports the full "capabilityValues", which additionally carries the type, the decimals and the allowed range. Two names because they are two shapes, and the range only exists on the second one, so read it there before setting anything.',
+      ...(advancedFlow === 'available'
+        ? [
+            '- An advanced flow is a list called "cards" going in and a list called "cards" coming back, including in the "previousFlow" and "deletedFlow" pre-images. Send each card back with the "x" and "y" it came with, otherwise the canvas is laid out again from scratch and every card moves.',
+          ]
+        : []),
+      '- Anything a tool hands back as a flow definition ("previousFlow", "deletedFlow", "storedFlow", and the "flow" inside "homey_flow_validate") is already in the shape the create and update tools accept, so it can be sent straight back to rebuild the flow or undo a change. That is the only undo this Homey offers for a delete.',
     ].join('\n'),
   )
 

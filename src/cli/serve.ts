@@ -9,11 +9,19 @@
 // can usefully do without a Homey, and a client showing "failed to connect" next
 // to a message naming one command to run is more actionable than a tool list
 // where every call returns the same error.
+//
+// The connection is opened through `openReconnectingConnection` rather than
+// `connectToHomey`, and that is the difference between a server that works for a
+// day and one that can be left running. A Homey session lasts exactly 24 hours.
+// This process is normally started once and left alone, so resolving credentials
+// once at startup meant every tool call after the first day failed with no route
+// back from inside the process.
 
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 
-import { connectToHomey, disconnectFromHomey } from '../homey/connect.js'
-import { NO_CREDENTIALS_HELP, resolveCredentials } from '../homey/credentials.js'
+import { openReconnectingConnection } from '../homey/connect.js'
+import type { ResolvedCredentials } from '../homey/credentials.js'
+import { resolveCredentials } from '../homey/credentials.js'
 import { classifyError } from '../homey/errors.js'
 import { createServer } from '../server/createServer.js'
 import type { Logger, LogLevel } from '../util/log.js'
@@ -24,6 +32,8 @@ export interface ServeOptions {
   argv?: string[]
   environment?: Record<string, string | undefined>
   logger?: Logger
+  /** Where the messages meant for a person go. stdout is the transport's. */
+  errorOutput?: NodeJS.WritableStream
 }
 
 /**
@@ -33,8 +43,19 @@ export interface ServeOptions {
 export async function runServe(options: ServeOptions = {}): Promise<number> {
   const argv = options.argv ?? []
   const environment = options.environment ?? process.env
+  const errorOutput = options.errorOutput ?? process.stderr
   const configPath = readFlagValue(argv, '--config')
-  const requestedLevel = parseLevelFlag(readFlagValue(argv, '--log-level'))
+
+  const requestedLevel = readLogLevel(argv)
+  if (requestedLevel === 'invalid') {
+    // Not ignorable: someone who mistypes this is asking to see more, and
+    // silently giving them the default level is how a debugging session starts
+    // by chasing the wrong thing.
+    errorOutput.write(
+      `\n"${readFlagValue(argv, '--log-level') ?? ''}" is not a log level. Use one of: ${LOG_LEVELS.join(', ')}.\n\n`,
+    )
+    return 1
+  }
 
   const logger =
     options.logger ??
@@ -43,16 +64,25 @@ export async function runServe(options: ServeOptions = {}): Promise<number> {
       ...(requestedLevel === null ? {} : { level: requestedLevel }),
     })
 
-  const credentials = await resolveCredentials({
-    environment,
-    logger,
-    ...(configPath === null ? {} : { configPath }),
-  }).catch((error: unknown) => {
+  // Read again on every reconnect rather than captured here. The Homey CLI
+  // refreshes its own session in the same file this reads, so when a 24 hour
+  // session dies the replacement is usually already on disk.
+  const loadCredentials = (): Promise<ResolvedCredentials> =>
+    resolveCredentials({
+      environment,
+      logger,
+      ...(configPath === null ? {} : { configPath }),
+    })
+
+  const credentials = await loadCredentials().catch((error: unknown) => {
     const failure = classifyError(error, { operation: 'resolveCredentials' })
     if (failure.reason === 'not_connected') {
-      // Not an error in the usual sense: the server has simply never been set up,
-      // and a stack trace here would hide the one line that fixes it.
-      process.stderr.write(`\n${NO_CREDENTIALS_HELP}\n\n`)
+      // Not an error in the usual sense: either the server has never been set
+      // up, or the file it was pointed at is not there. The message already
+      // names which of the two it is and what to run, so it is printed as it
+      // stands. Substituting the generic "no credentials found" help here told
+      // someone who mistyped --config that they had never set the server up.
+      errorOutput.write(`\n${failure.message}\n\n`)
       return null
     }
     throw failure
@@ -60,7 +90,7 @@ export async function runServe(options: ServeOptions = {}): Promise<number> {
 
   if (credentials === null) return 1
 
-  const connection = await connectToHomey(credentials, { logger })
+  const connection = await openReconnectingConnection({ credentials, loadCredentials, logger })
 
   try {
     const { server } = await createServer({ connection, logger })
@@ -92,16 +122,28 @@ export async function runServe(options: ServeOptions = {}): Promise<number> {
 
     await server.connect(transport)
     logger.info('Listening on stdio')
+    // Said once, in the log a user actually reads, because the alternative is
+    // finding out a day later. Sessions die on a schedule, and this server signs
+    // in again by itself instead of needing a restart.
+    logger.info('Homey sessions last 24 hours. This server reads your credentials again and signs in once more whenever Homey refuses one, so it can be left running.')
 
     await closed
     return 0
   } finally {
-    await disconnectFromHomey(connection)
+    await connection.close()
   }
 }
 
-function parseLevelFlag(value: string | null): LogLevel | null {
+/**
+ * The requested log level, null when the flag was not given, and 'invalid' when
+ * it was given something that is not a level.
+ *
+ * The three cases were two before, and an unreadable level fell in with an
+ * absent one: `--log-level debgu` quietly ran at the default.
+ */
+function readLogLevel(argv: string[]): LogLevel | null | 'invalid' {
+  const value = readFlagValue(argv, '--log-level')
   if (value === null) return null
   const normalised = value.trim().toLowerCase()
-  return LOG_LEVELS.find((level) => level === normalised) ?? null
+  return LOG_LEVELS.find((level) => level === normalised) ?? 'invalid'
 }

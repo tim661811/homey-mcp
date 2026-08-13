@@ -286,9 +286,9 @@ function textOf(result: CallToolResult): string {
 function soundFlowInput(name = 'Warn when the attic door opens'): Record<string, unknown> {
   return {
     name,
-    trigger: { id: DOOR_TRIGGER },
-    conditions: [{ id: PRESENCE_CONDITION, inverted: true }],
-    actions: [{ id: NOTIFY_ACTION, args: { text: 'The attic door opened' } }],
+    trigger: { cardId: DOOR_TRIGGER },
+    conditions: [{ cardId: PRESENCE_CONDITION, inverted: true }],
+    actions: [{ cardId: NOTIFY_ACTION, args: { text: 'The attic door opened' } }],
   }
 }
 
@@ -365,7 +365,7 @@ describe('homey_flows_list', () => {
     const result = await takeTool(harness, 'homey_flows_list').handler({ brokenOnly: true })
 
     expect(textOf(result)).toContain('does not report which flows are broken')
-    expect(structuredOf(result)['brokenFlagReportedByHomey']).toBe(false)
+    expect(structuredOf(result)['brokenReportedByHomey']).toBe(false)
   })
 
   it('says when the answer was cut short', async () => {
@@ -450,8 +450,8 @@ describe('homey_flow_validate', () => {
     const harness = createHarness()
     const result = await takeTool(harness, 'homey_flow_validate').handler({
       name: 'Started by another flow',
-      trigger: { id: PROGRAMMATIC_TRIGGER },
-      actions: [{ id: NOTIFY_ACTION, args: { text: 'someone started me' } }],
+      trigger: { cardId: PROGRAMMATIC_TRIGGER },
+      actions: [{ cardId: NOTIFY_ACTION, args: { text: 'someone started me' } }],
     })
 
     const structured = structuredOf(result)
@@ -463,8 +463,8 @@ describe('homey_flow_validate', () => {
     const harness = createHarness()
     const result = await takeTool(harness, 'homey_flow_validate').handler({
       name: 'Start another flow',
-      trigger: { id: DOOR_TRIGGER },
-      actions: [{ id: PROGRAMMATIC_TRIGGER, args: { flow: { id: 'ffffffff-0001-4000-8000-000000000000', name: 'Other flow' } } }],
+      trigger: { cardId: DOOR_TRIGGER },
+      actions: [{ cardId: PROGRAMMATIC_TRIGGER, args: { flow: { id: 'ffffffff-0001-4000-8000-000000000000', name: 'Other flow' } } }],
     })
 
     const structured = structuredOf(result)
@@ -478,9 +478,9 @@ describe('homey_flow_validate', () => {
     const harness = createHarness()
     const result = await takeTool(harness, 'homey_flow_validate').handler({
       name: 'Wrong slot',
-      trigger: { id: DOOR_TRIGGER },
-      conditions: [{ id: PROGRAMMATIC_TRIGGER }],
-      actions: [{ id: NOTIFY_ACTION, args: { text: 'x' } }],
+      trigger: { cardId: DOOR_TRIGGER },
+      conditions: [{ cardId: PROGRAMMATIC_TRIGGER }],
+      actions: [{ cardId: NOTIFY_ACTION, args: { text: 'x' } }],
     })
 
     const reported = JSON.stringify(structuredOf(result)['problems'])
@@ -496,8 +496,8 @@ describe('homey_flow_validate', () => {
     const harness = createHarness()
     const result = await takeTool(harness, 'homey_flow_validate').handler({
       name: 'No trigger',
-      trigger: { id: '' },
-      actions: [{ id: NOTIFY_ACTION, args: { text: 'x' } }],
+      trigger: { cardId: '' },
+      actions: [{ cardId: NOTIFY_ACTION, args: { text: 'x' } }],
     })
 
     expect(JSON.stringify(structuredOf(result))).toContain('NOT NULL constraint failed: Flow.trigger')
@@ -521,9 +521,9 @@ describe('the flow tools round trip through each other', () => {
   function flowWithEveryCardField(name = 'Warn, wait and hold'): Record<string, unknown> {
     return {
       name,
-      trigger: { id: DOOR_TRIGGER },
-      conditions: [{ id: LESS_THAN_CONDITION, args: { value: 5 }, droptoken: LUMINANCE_DROPTOKEN }],
-      actions: [{ id: NOTIFY_ACTION, args: { text: 'The attic door opened' }, delaySeconds: 30, durationSeconds: 5 }],
+      trigger: { cardId: DOOR_TRIGGER },
+      conditions: [{ cardId: LESS_THAN_CONDITION, args: { value: 5 }, droptoken: LUMINANCE_DROPTOKEN }],
+      actions: [{ cardId: NOTIFY_ACTION, args: { text: 'The attic door opened' }, delaySeconds: 30, durationSeconds: 5 }],
     }
   }
 
@@ -567,7 +567,7 @@ describe('the flow tools round trip through each other', () => {
 
     const changed = await takeTool(harness, 'homey_flow_update').handler({
       flow: flowId,
-      actions: [{ id: NOTIFY_ACTION, args: { text: 'Something else' } }],
+      actions: [{ cardId: NOTIFY_ACTION, args: { text: 'Something else' } }],
     })
 
     const previous = structuredOf(changed)['previousFlow'] as Record<string, unknown>
@@ -604,12 +604,50 @@ describe('the flow tools round trip through each other', () => {
     expect(stored.actions[0]).toMatchObject({ delaySeconds: 30, durationSeconds: 5 })
   })
 
+  it('names a card id "cardId" on the way out, exactly as the card tools name it on the way in', async () => {
+    // The rename that stopped one tool short. homey_flowcard_describe and
+    // homey_flowcard_autocomplete take `cardId`, so a caller carrying a card
+    // from discovery into authoring had to rename it to `id` for validate,
+    // create and update, and rename it back for the advanced tools, which kept
+    // `cardId` throughout. Every card these tools emit is now in the shape the
+    // input accepts.
+    const harness = createHarness()
+
+    const validated = await takeTool(harness, 'homey_flow_validate').handler(flowWithEveryCardField())
+    const flow = structuredOf(validated)['flow'] as {
+      trigger: Record<string, unknown>
+      conditions: Array<Record<string, unknown>>
+      actions: Array<Record<string, unknown>>
+    }
+    expect(flow.trigger['cardId']).toBe(DOOR_TRIGGER)
+    expect(flow.trigger['id']).toBeUndefined()
+    expect(flow.conditions[0]?.['cardId']).toBe(LESS_THAN_CONDITION)
+    expect(flow.actions[0]?.['cardId']).toBe(NOTIFY_ACTION)
+
+    const read = await takeTool(harness, 'homey_flow_get').handler({ flow: 'Warn when the attic door opens' })
+    const stored = (structuredOf(read)['flow'] as Record<string, unknown>)['trigger'] as Record<string, unknown>
+    expect(stored['cardId']).toBe(DOOR_TRIGGER)
+    expect(stored['id']).toBeUndefined()
+  })
+
+  it('refuses a card that still names its id the old way, rather than building a flow without a trigger', async () => {
+    const harness = createHarness()
+
+    await expect(
+      takeTool(harness, 'homey_flow_validate').handler({
+        name: 'Old field name',
+        trigger: { id: DOOR_TRIGGER },
+        actions: [{ cardId: NOTIFY_ACTION, args: { text: 'x' } }],
+      }),
+    ).rejects.toThrow()
+  })
+
   it('accepts a card whose droptoken is null, which is how a card with nothing dropped on it reads', async () => {
     const harness = createHarness()
     const result = await takeTool(harness, 'homey_flow_validate').handler({
       name: 'Nothing dropped on it',
-      trigger: { id: DOOR_TRIGGER, droptoken: null },
-      actions: [{ id: NOTIFY_ACTION, args: { text: 'x' }, droptoken: null, delaySeconds: null, durationSeconds: null }],
+      trigger: { cardId: DOOR_TRIGGER, droptoken: null },
+      actions: [{ cardId: NOTIFY_ACTION, args: { text: 'x' }, droptoken: null, delaySeconds: null, durationSeconds: null }],
     })
 
     expect(structuredOf(result)['valid']).toBe(true)
@@ -677,8 +715,8 @@ describe('homey_flow_create', () => {
     const harness = createHarness()
     const result = await takeTool(harness, 'homey_flow_create').handler({
       name: 'Made up card',
-      trigger: { id: 'homey:app:com.example.missing:something' },
-      actions: [{ id: NOTIFY_ACTION, args: { text: 'x' } }],
+      trigger: { cardId: 'homey:app:com.example.missing:something' },
+      actions: [{ cardId: NOTIFY_ACTION, args: { text: 'x' } }],
     })
 
     expect(result.isError).toBe(true)
@@ -731,8 +769,8 @@ describe('homey_flow_create', () => {
     const harness = createHarness()
     const created = await takeTool(harness, 'homey_flow_create').handler({
       name: 'Started by another flow',
-      trigger: { id: PROGRAMMATIC_TRIGGER },
-      actions: [{ id: NOTIFY_ACTION, args: { text: 'someone started me' } }],
+      trigger: { cardId: PROGRAMMATIC_TRIGGER },
+      actions: [{ cardId: NOTIFY_ACTION, args: { text: 'someone started me' } }],
     })
 
     expect(created.isError).toBeFalsy()
@@ -996,7 +1034,7 @@ describe('homey_flow_delete', () => {
     })
 
     const deleted = structuredOf(result)['deletedFlow'] as Record<string, unknown>
-    expect((deleted['trigger'] as Record<string, unknown>)['id']).toBe(DOOR_TRIGGER)
+    expect((deleted['trigger'] as Record<string, unknown>)['cardId']).toBe(DOOR_TRIGGER)
     expect(harness.flows['bbbbbbbb-0009-4000-8000-000000000009']).toBeUndefined()
   })
 
@@ -1005,6 +1043,35 @@ describe('homey_flow_delete', () => {
     await takeTool(harness, 'homey_flow_delete').handler({ flow: 'Attic door routine', confirm: true })
 
     expect(harness.writes.map((write) => write.operation)).toContain('deleteAdvancedFlow')
+  })
+
+  it('rebuilds a deleted advanced flow from deletedFlow, which is the only undo there is', async () => {
+    // The regression this exists for: the result said in as many words that it
+    // was "rendered in the shape the create tools accept", and for an advanced
+    // flow it was not. The graph came back under `nodes` while
+    // homey_advancedflow_create takes `cards`, so zod dropped it and the rebuild
+    // failed on a required field, with the deleted flow already gone from the
+    // hub.
+    const harness = createHarness()
+    const deleted = await takeTool(harness, 'homey_flow_delete').handler({
+      flow: 'Attic door routine',
+      confirm: true,
+    })
+
+    const definition = structuredOf(deleted)['deletedFlow'] as Record<string, unknown>
+    expect(definition['nodes']).toBeUndefined()
+
+    const rebuilt = await takeTool(harness, 'homey_advancedflow_create').handler({
+      name: definition['name'],
+      cards: definition['cards'],
+    })
+
+    expect(rebuilt.isError).toBeUndefined()
+    expect(structuredOf(rebuilt)['verified']).toBe(true)
+    const written = harness.writes.find((write) => write.operation === 'createAdvancedFlow')?.payload as {
+      cards: Record<string, unknown>
+    }
+    expect(Object.keys(written.cards)).toHaveLength(6)
   })
 })
 
@@ -1103,7 +1170,7 @@ describe('homey_advancedflow_create', () => {
       // additional properties, which names the wrong thing entirely.
       expect(key).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     }
-    expect(Object.keys(structuredOf(result)['cardIdsByLabel'] as Record<string, unknown>).sort()).toEqual([
+    expect(Object.keys(structuredOf(result)['nodeKeysByLabel'] as Record<string, unknown>).sort()).toEqual([
       'check',
       'clock',
       'join',
@@ -1116,7 +1183,7 @@ describe('homey_advancedflow_create', () => {
     const harness = createHarness()
     const result = await takeTool(harness, 'homey_advancedflow_create').handler(structuredClone(graphInput))
 
-    const identifiers = structuredOf(result)['cardIdsByLabel'] as Record<string, string>
+    const identifiers = structuredOf(result)['nodeKeysByLabel'] as Record<string, string>
     const written = harness.writes.find((write) => write.operation === 'createAdvancedFlow')?.payload as {
       cards: Record<string, Record<string, unknown>>
     }
@@ -1128,7 +1195,7 @@ describe('homey_advancedflow_create', () => {
     const harness = createHarness()
     const result = await takeTool(harness, 'homey_advancedflow_create').handler(structuredClone(graphInput))
 
-    const identifiers = structuredOf(result)['cardIdsByLabel'] as Record<string, string>
+    const identifiers = structuredOf(result)['nodeKeysByLabel'] as Record<string, string>
     const written = harness.writes.find((write) => write.operation === 'createAdvancedFlow')?.payload as {
       cards: Record<string, Record<string, unknown>>
     }
@@ -1155,7 +1222,7 @@ describe('homey_advancedflow_create', () => {
     const harness = createHarness()
     const result = await takeTool(harness, 'homey_advancedflow_create').handler(structuredClone(graphInput))
 
-    const identifiers = structuredOf(result)['cardIdsByLabel'] as Record<string, string>
+    const identifiers = structuredOf(result)['nodeKeysByLabel'] as Record<string, string>
     const written = harness.writes.find((write) => write.operation === 'createAdvancedFlow')?.payload as {
       cards: Record<string, Record<string, unknown>>
     }
@@ -1276,6 +1343,39 @@ describe('homey_flow_get into homey_advancedflow_update', () => {
     expect(written.advancedflow.cards[NOTE_NODE]?.['color']).toBe('blue')
     expect(written.advancedflow.cards[NOTE_NODE]?.['value']).toBe('The porch sensor reads low under the roof light')
   })
+
+  it('keeps the canvas the owner arranged when the graph is read and rewritten', async () => {
+    // The coordinates are on the wire and on the node type, and the update tool
+    // replaces the whole graph. While the input schema did not accept x and y,
+    // zod stripped both off every card the reader had just been handed, so
+    // applyAutoLayout treated a hand-arranged flow as unplaced and moved every
+    // card in it. The owner's arrangement of their own flow is not this
+    // server's to discard on an unrelated edit.
+    const harness = createHarness()
+    addGraphWithDroptokenAndColouredNote(harness)
+
+    const read = await takeTool(harness, 'homey_flow_get').handler({ flow: 'Say something when it gets dark' })
+    const cards = (structuredOf(read)['flow'] as Record<string, unknown>)['cards'] as Array<Record<string, unknown>>
+    expect(cards.find((card) => card['key'] === NOTE_NODE)).toMatchObject({ x: 40, y: 400 })
+
+    const rewritten = cards.map((card) =>
+      card['key'] === TRIGGER_NODE ? { ...card, outputSuccess: [CONDITION_NODE, SPEAK_NODE] } : card,
+    )
+    const updated = await takeTool(harness, 'homey_advancedflow_update').handler({
+      flow: GRAPH_FLOW_ID,
+      confirm: true,
+      cards: rewritten,
+    })
+    expect(updated.isError).toBeUndefined()
+
+    const written = harness.writes.find((write) => write.operation === 'updateAdvancedFlow')?.payload as {
+      advancedflow: { cards: Record<string, Record<string, unknown>> }
+    }
+    expect(written.advancedflow.cards[TRIGGER_NODE]).toMatchObject({ x: 40, y: 200 })
+    expect(written.advancedflow.cards[CONDITION_NODE]).toMatchObject({ x: 440, y: 200 })
+    expect(written.advancedflow.cards[SPEAK_NODE]).toMatchObject({ x: 840, y: 200 })
+    expect(written.advancedflow.cards[NOTE_NODE]).toMatchObject({ x: 40, y: 400 })
+  })
 })
 
 describe('homey_advancedflow_update', () => {
@@ -1298,8 +1398,40 @@ describe('homey_advancedflow_update', () => {
       cards: [{ key: 'clock', type: 'trigger', cardId: CRON_TRIGGER, args: { time: '22:00' } }],
     })
 
+    // Under `cards`, which is what the create and update tools take, and never
+    // under the internal `nodes`. This result is the whole undo path for a
+    // change that replaces the graph wholesale.
     const previous = structuredOf(result)['previousFlow'] as Record<string, unknown>
-    expect((previous['nodes'] as unknown[]).length).toBe(6)
+    expect(previous['nodes']).toBeUndefined()
+    expect((previous['cards'] as unknown[]).length).toBe(6)
+  })
+
+  it('puts the graph back from previousFlow without renaming a single field', async () => {
+    // The regression this exists for: previousFlow emitted the graph under
+    // `nodes` while the tool takes it under `cards`, so zod dropped the graph
+    // entirely and the undo failed on a required field the caller had never
+    // been shown. Nothing is rebuilt or renamed here on purpose.
+    const harness = createHarness()
+    const changed = await takeTool(harness, 'homey_advancedflow_update').handler({
+      flow: 'Attic door routine',
+      confirm: true,
+      cards: [{ key: 'clock', type: 'trigger', cardId: CRON_TRIGGER, args: { time: '22:00' } }],
+    })
+    const previous = structuredOf(changed)['previousFlow'] as Record<string, unknown>
+
+    const putBack = await takeTool(harness, 'homey_advancedflow_update').handler({
+      flow: 'Attic door routine',
+      confirm: true,
+      name: previous['name'],
+      cards: previous['cards'],
+    })
+
+    expect(putBack.isError).toBeUndefined()
+    expect(structuredOf(putBack)['verified']).toBe(true)
+    const written = harness.writes.filter((write) => write.operation === 'updateAdvancedFlow')
+    const restored = (written[written.length - 1]?.payload as { advancedflow: { cards: Record<string, unknown> } })
+      .advancedflow.cards
+    expect(Object.keys(restored)).toHaveLength(6)
   })
 
   it('sends a standard flow to the tool that understands it', async () => {

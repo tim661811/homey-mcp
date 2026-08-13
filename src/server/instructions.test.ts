@@ -73,13 +73,14 @@ describe('buildServerInstructions', () => {
       .split('\n')
       .filter((line) => /^\d\. /.test(line))
 
-    expect(steps).toHaveLength(6)
+    expect(steps).toHaveLength(7)
     expect(steps[0]).toContain('homey_devices_search')
     expect(steps[1]).toContain('homey_flowcards_search')
     expect(steps[2]).toContain('homey_flowcard_describe')
     expect(steps[3]).toContain('homey_flowcard_autocomplete')
-    expect(steps[4]).toContain('homey_flow_validate')
-    expect(steps[5]).toContain('homey_flow_create')
+    expect(steps[4]).toContain('"cardId"')
+    expect(steps[5]).toContain('homey_flow_validate')
+    expect(steps[6]).toContain('homey_flow_create')
   })
 
   // Step 4 is reached straight from step 3, and the two tools once named the
@@ -94,6 +95,54 @@ describe('buildServerInstructions', () => {
 
     expect(steps[2]).toContain('"cardId"')
     expect(steps[3]).toContain('"cardId"')
+  })
+
+  // The instructions are the one place a model reads before any tool
+  // description, so they are where a value crossing from one tool into another
+  // has to be named. Each line below existed as a broken handoff first.
+  describe('the handoffs between tools', () => {
+    it('says a card id keeps the name cardId all the way through authoring', () => {
+      const instructions = build()
+
+      expect(instructions).toContain('A flow card id is called "cardId" on every tool that takes one')
+    })
+
+    it('points from a device straight at its own history through logId', () => {
+      const instructions = build()
+
+      expect(instructions).toContain('"logId"')
+      expect(instructions).toContain('homey_insights_query')
+    })
+
+    it('separates the two capability shapes by name, and says where the range lives', () => {
+      const instructions = build()
+
+      expect(instructions).toContain('"capabilitySummaries"')
+      expect(instructions).toContain('"capabilityValues"')
+    })
+
+    it('promises the undo pre-images can go straight back in', () => {
+      const instructions = build()
+
+      expect(instructions).toContain('"previousFlow"')
+      expect(instructions).toContain('"deletedFlow"')
+    })
+
+    it('explains the advanced graph handoff only on a Homey that has Advanced Flow', () => {
+      // Naming "cards", "x" and "y" on a hub with no Advanced Flow describes
+      // tools that were never registered, which is the same untruth the
+      // capability lines exist to avoid.
+      const withoutAdvancedFlow = build()
+      expect(withoutAdvancedFlow).not.toContain('the canvas is laid out again from scratch')
+
+      const withAdvancedFlow = build({
+        ...CAPABILITIES,
+        hardware: { ...CAPABILITIES.hardware, advancedFlow: true },
+        probes: { ...CAPABILITIES.probes, advancedFlow: outcome('available', 'flow.getAdvancedFlows') },
+      })
+      expect(withAdvancedFlow).toContain('a list called "cards" going in and a list called "cards" coming back')
+      expect(withAdvancedFlow).toContain('the canvas is laid out again from scratch')
+    })
   })
 
   // homey_flowcard_autocomplete answers with `choices: [{label, value}]`, so

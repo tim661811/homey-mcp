@@ -18,7 +18,6 @@ import type { NameResolution } from '../../homey/cache.js'
 import { classifyError, HomeyMcpError } from '../../homey/errors.js'
 import type {
   DeviceCapabilityValue,
-  DeviceInsightReference,
   DeviceSummary,
   FlowSummary,
   LogicVariableSummary,
@@ -90,7 +89,7 @@ function registerDevicesSearch(server: McpServer, context: ServerContext): void 
       title: 'Search Homey devices',
       description: [
         'Finds devices by zone, class, capability or name, and optionally returns their live values.',
-        'Set includeCapabilityValues to answer a question like "what is the state of the living room" in one call.',
+        'Set includeCapabilitySummaries to answer a question like "what is the state of the living room" in one call.',
         'Every filter is combined with AND. Results are projected down to what is useful for reasoning:',
         'protocol settings, icons, images and interface layout are never returned.',
         'The Homey API cannot paginate, so paging happens here: use offset with limit and check `truncated`.',
@@ -111,10 +110,12 @@ function registerDevicesSearch(server: McpServer, context: ServerContext): void 
           .describe('Capability id the device must have, for example onoff or measure_temperature. Prefix match.'),
         nameContains: z.string().optional().describe('Case and accent insensitive substring of the device name.'),
         available: z.boolean().optional().describe('Filter on whether Homey can currently reach the device.'),
-        includeCapabilityValues: z
+        includeCapabilitySummaries: z
           .boolean()
           .optional()
-          .describe('Include the current value, unit and setable flag of every capability. Defaults to false.'),
+          .describe(
+            'Fills capabilitySummaries on every device returned: the title, current value, unit and setable flag of each capability. Defaults to false. For the full record of one capability, with its type, decimals and allowed range, call homey_device_get instead.',
+          ),
         limit: z.number().int().min(1).max(MAX_SEARCH_LIMIT).optional().describe(`Defaults to ${DEFAULT_SEARCH_LIMIT}.`),
         offset: z.number().int().min(0).optional().describe('Devices to skip, for paging. Defaults to 0.'),
       },
@@ -149,7 +150,7 @@ function registerDevicesSearch(server: McpServer, context: ServerContext): void 
         const limit = args.limit ?? DEFAULT_SEARCH_LIMIT
         const offset = args.offset ?? 0
         const page = filtered.slice(offset, offset + limit)
-        const includeValues = args.includeCapabilityValues === true
+        const includeSummaries = args.includeCapabilitySummaries === true
 
         const summary =
           filtered.length === 0
@@ -159,11 +160,14 @@ function registerDevicesSearch(server: McpServer, context: ServerContext): void 
                 .join(', ')}.`
 
         return successResult(summary, {
-          total: filtered.length,
+          // `totalMatches`, the name homey_flows_list and homey_flowcards_search
+          // already use for the same number. It was `total` here, which read as
+          // "how many devices this Homey has" rather than "how many matched".
+          totalMatches: filtered.length,
           returned: page.length,
           offset,
           truncated: offset + page.length < filtered.length,
-          devices: page.map((device) => projectDevice(device, includeValues)),
+          devices: page.map((device) => projectDevice(device, includeSummaries)),
         })
       } catch (error) {
         return failureResult(error, { operation: 'homey_devices_search', logger: context.logger })
@@ -180,7 +184,8 @@ function registerDeviceGet(server: McpServer, context: ServerContext): void {
       description: [
         'Full detail for a single device: every capability with its live value, whether it can be set,',
         'its unit, decimals and allowed range, the energy block, and which Insights logs exist for it.',
-        'Accepts a device id or a device name. Read the min and max here before calling',
+        'Each of those logs carries a logId that homey_insights_query takes as is, so this is the route',
+        'from a device to its own history. Accepts a device id or a device name. Read the min and max here before calling',
         'homey_device_set_capability: several capabilities are a 0..1 fraction despite reading as a percentage.',
       ].join(' '),
       inputSchema: {
@@ -554,14 +559,25 @@ export function collectZoneAndDescendants(zoneId: string, zones: readonly ZoneSu
   return collected
 }
 
-export interface CompactCapabilityValue {
+/**
+ * The projected per-capability record `homey_devices_search` returns.
+ *
+ * It has its own name, and the field it lands in has its own name, because it is
+ * not the same thing as the record `homey_device_get` returns. Both used to be
+ * called `capabilityValues`: four fields on one tool and fourteen on the other,
+ * so anything reading `capabilityValues.dim.max` worked against one tool and
+ * read undefined against the other. They stay two shapes on purpose, since
+ * search runs over every matching device and the full record is around 4 KB
+ * apiece, but two shapes have to be two names.
+ */
+export interface CapabilitySummary {
   title: string
   value: boolean | number | string | null
   units: string | null
   setable: boolean
 }
 
-export function projectDevice(device: DeviceSummary, includeCapabilityValues: boolean): Record<string, unknown> {
+export function projectDevice(device: DeviceSummary, includeCapabilitySummaries: boolean): Record<string, unknown> {
   const projected: Record<string, unknown> = {
     id: device.id,
     name: device.name,
@@ -585,24 +601,46 @@ export function projectDevice(device: DeviceSummary, includeCapabilityValues: bo
     // itself after four rapid requests.
   }
 
-  if (includeCapabilityValues) {
-    const compact: Record<string, CompactCapabilityValue> = {}
+  if (includeCapabilitySummaries) {
+    const summaries: Record<string, CapabilitySummary> = {}
     for (const [capabilityId, capability] of Object.entries(device.capabilityValues)) {
-      compact[capabilityId] = {
+      summaries[capabilityId] = {
         title: capability.title,
         value: capability.value,
         units: capability.units,
         setable: capability.setable,
       }
     }
-    projected['capabilityValues'] = compact
+    projected['capabilitySummaries'] = summaries
   }
 
   return projected
 }
 
+/**
+ * One Insights series belonging to a device, named the way the history tools
+ * name it.
+ *
+ * Deliberately not `DeviceInsightReference`, which carries the owner uri and the
+ * short id as two separate fields. `homey_insights_query.logs` resolves against
+ * the composite `"<uri>:<id>"`, and `homey_insights_search` already answers with
+ * exactly that under `logId`, so emitting the pair here left the documented path
+ * from a device to its own history broken: neither half of it is a value the
+ * query tool accepts, and joining them was a step nobody was told to take. The
+ * pair is gone rather than kept alongside, because two ways to name one series
+ * is how a caller picks the one that does not work.
+ */
+interface DeviceInsightsLogReference {
+  /** The identifier homey_insights_query accepts, for example homey:device:<uuid>:measure_temperature. */
+  logId: string
+  type: 'number' | 'boolean'
+  title: string
+  units: string | null
+  decimals: number | null
+}
+
 interface ResolvedDeviceInsights {
-  logs: DeviceInsightReference[]
+  logs: DeviceInsightsLogReference[]
   /** Null when the catalogue was read. A sentence naming why when it was not. */
   unavailableReason: string | null
 }
@@ -637,19 +675,17 @@ async function resolveDeviceInsights(
     const catalogue = await context.cache.getInsightsLogs()
     const ownerUri = `homey:device:${device.id}`
 
-    return {
-      logs: catalogue.all
-        .filter((log) => log.uri === ownerUri)
-        .map((log) => ({
-          uri: log.uri,
-          id: log.id,
-          type: log.type,
-          title: log.title,
-          units: log.units,
-          decimals: log.decimals,
-        })),
-      unavailableReason: null,
+    // Keyed by the cache's own log id rather than rebuilt from the parts. That
+    // key is the composite the Insights tools resolve against, and it is formed
+    // in exactly one place, so this cannot drift out of step with what
+    // homey_insights_query will actually accept.
+    const logs: DeviceInsightsLogReference[] = []
+    for (const [logId, log] of catalogue.byId) {
+      if (log.uri !== ownerUri) continue
+      logs.push({ logId, type: log.type, title: log.title, units: log.units, decimals: log.decimals })
     }
+
+    return { logs, unavailableReason: null }
   } catch (error) {
     // A device that cannot be described because its history could not be read is
     // still worth describing. The rest of the record is unaffected, so the gap is

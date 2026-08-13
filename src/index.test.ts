@@ -1,6 +1,34 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { reportExitCode } from './index.js'
+import { DOCTOR_FLAGS, SERVE_FLAGS, SETUP_FLAGS } from './cli/flags.js'
+import { main, reportExitCode } from './index.js'
+
+// Every subcommand is replaced, so a routing bug in the checks below cannot
+// start a real server on this process's stdio or reach for a Homey.
+const subcommands = vi.hoisted(() => ({
+  runServe: vi.fn(async () => 0),
+  runSetup: vi.fn(async () => 0),
+  runDoctor: vi.fn(async () => 0),
+}))
+
+vi.mock('./cli/serve.js', () => ({ runServe: subcommands.runServe }))
+vi.mock('./cli/setup.js', () => ({ runSetup: subcommands.runSetup }))
+vi.mock('./cli/doctor.js', () => ({ runDoctor: subcommands.runDoctor }))
+
+/** Collects what a run wrote, so the message a user reads can be asserted on. */
+function captureOutput(): { standardOutput: () => string; errorOutput: () => string } {
+  const written: string[] = []
+  const errors: string[] = []
+  vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+    written.push(String(chunk))
+    return true
+  })
+  vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+    errors.push(String(chunk))
+    return true
+  })
+  return { standardOutput: () => written.join(''), errorOutput: () => errors.join('') }
+}
 
 /**
  * `process.exitCode` is process-wide state, so every test puts it back. Vitest
@@ -11,6 +39,76 @@ const originalExitCode = process.exitCode
 afterEach(() => {
   process.exitCode = originalExitCode
   vi.restoreAllMocks()
+  subcommands.runServe.mockClear()
+  subcommands.runSetup.mockClear()
+  subcommands.runDoctor.mockClear()
+})
+
+describe('main, on the arguments it is given', () => {
+  it('refuses a misspelled --report instead of running the unscrubbed report', async () => {
+    // The privacy trap this check exists for. "doctor --repot" used to run the
+    // full terminal report, which carries LAN addresses, the Athom cloud id and
+    // filesystem paths, at the moment the user believed they had asked for the
+    // scrubbed one they were about to paste into a public issue.
+    const output = captureOutput()
+
+    const exitCode = await main(['doctor', '--repot'])
+
+    expect(exitCode).toBe(1)
+    expect(subcommands.runDoctor).not.toHaveBeenCalled()
+    expect(output.errorOutput()).toContain('"--repot" is not an option of "homey-mcp doctor"')
+    expect(output.errorOutput()).toContain('Did you mean "--report"?')
+  })
+
+  it('still runs a subcommand whose options are all recognised', async () => {
+    captureOutput()
+
+    expect(await main(['doctor', '--report', '--quick'])).toBe(0)
+    expect(subcommands.runDoctor).toHaveBeenCalledWith({ argv: ['--report', '--quick'] })
+  })
+
+  it('refuses an unknown option in the first position, which is the default subcommand', async () => {
+    const output = captureOutput()
+
+    expect(await main(['--repot'])).toBe(1)
+    expect(subcommands.runServe).not.toHaveBeenCalled()
+    expect(output.errorOutput()).toContain('is not an option')
+  })
+
+  it('checks setup too, which reads its own arguments with includes and cannot notice one', async () => {
+    const output = captureOutput()
+
+    expect(await main(['setup', '--yess'])).toBe(1)
+    expect(subcommands.runSetup).not.toHaveBeenCalled()
+    expect(output.errorOutput()).toContain('Did you mean "--yes"?')
+  })
+
+  it('prints the usage for --help after a subcommand rather than running it', async () => {
+    // "homey-mcp doctor --help" used to fall through as an argument nothing
+    // read, so asking for help ran a full report against the hub.
+    const output = captureOutput()
+
+    expect(await main(['doctor', '--help'])).toBe(0)
+    expect(subcommands.runDoctor).not.toHaveBeenCalled()
+    expect(output.standardOutput()).toContain('homey-mcp doctor')
+  })
+
+  it('documents every option it accepts, so the help and the checks cannot drift apart', async () => {
+    const output = captureOutput()
+    await main(['--help'])
+    const usage = output.standardOutput()
+
+    for (const spec of [...SERVE_FLAGS, ...SETUP_FLAGS, ...DOCTOR_FLAGS]) {
+      expect(usage, `${spec.name} is accepted but not documented`).toContain(spec.name)
+    }
+  })
+
+  it('says the session renews itself, because a day-old server that answers nothing looks broken', async () => {
+    const output = captureOutput()
+    await main(['--help'])
+
+    expect(output.standardOutput()).toContain('24 hours')
+  })
 })
 
 describe('reportExitCode', () => {

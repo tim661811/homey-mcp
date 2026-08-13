@@ -4,6 +4,12 @@ Written for a maintainer who has not done this before, or who did it once six
 months ago and does not remember the details. Everything version-dependent here
 was checked against the live registry and the installed npm on 2026-08-13.
 
+This file owns the mechanics of cutting a release and nothing else. What the
+version number promises is declared in the README under "Versioning, and what the
+public API is", and which hardware is supported is in
+[COMPATIBILITY.md](COMPATIBILITY.md). Neither of those questions gets a second
+answer here, so a change to either belongs in that file alone.
+
 `homey-mcp` is published to npm by
 [`.github/workflows/release.yml`](.github/workflows/release.yml), which runs when
 a GitHub Release is published. There is no npm token in this repository, in its
@@ -22,6 +28,24 @@ Two things follow from that, and they are the reason this file exists:
 ## Cutting a release
 
 Five steps. The only decision is the version number.
+
+### Choosing the number
+
+The README's public API declaration is what decides this, not taste. Go and read
+the covered list there against the diff you are about to release, then:
+
+- Anything in that covered list breaking makes it `npm version minor` while this
+  project is below 1.0, because that is where a pre-1.0 project puts a breaking
+  change and the README promises exactly that to anyone who pinned `~0.1.0`.
+- Everything else, including new tools and new optional parameters, is
+  `npm version patch`.
+- Cutting the actual 1.0 needs the four conditions in that same README section to
+  be true. Publishing a 1.0 that does not meet them costs a major version to walk
+  back, which is the whole reason the conditions are written down.
+
+If the release breaks something that is deliberately not covered, such as the
+wording of a tool result or the layout of `src/`, that is a patch. Say so in the
+release notes anyway when a reader could have been relying on it.
 
 ```bash
 git switch -c release-0.1.1

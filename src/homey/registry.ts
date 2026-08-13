@@ -157,11 +157,16 @@ export async function detectCapabilities(
       notes.push(`This Homey does not offer ${probe.description}: ${probe.label} reports that the endpoint is absent.`)
     } else if (outcome.status === 'forbidden') {
       notes.push(
-        `${probe.description} was refused for this session rather than missing from the hardware. Sign in again with "homey login" to get a session with full permissions.`,
+        `${probe.description} was refused for this session rather than missing from the hardware. Sign in again with "homey login" and restart this server: the probe runs once at startup, so a new session only counts from the next start.`,
       )
     } else if (outcome.status === 'failed') {
+      // Deliberately does not say "treating it as unavailable", which is what it
+      // used to say. The probe runs once at startup and this hub rate limits its
+      // own local API, so a probe can fail on a feature that works; reporting
+      // that as unavailable turned one bad moment into a permanent claim about
+      // the hardware.
       notes.push(
-        `Could not determine whether this Homey offers ${probe.description}: ${outcome.detail ?? 'the probe failed'}. Treating it as unavailable.`,
+        `Could not determine whether this Homey offers ${probe.description}: ${outcome.detail ?? 'the probe failed'}. That is not a verdict about the hardware, and the probe only runs at startup, so restart this server to try again.`,
       )
     }
 
@@ -174,10 +179,10 @@ export async function detectCapabilities(
 
   const registry: CapabilityRegistry = {
     hardware: {
-      advancedFlow: isAvailable(probes['advancedFlow']),
-      energyReports: isAvailable(probes['energyReports']),
-      moods: isAvailable(probes['moods']),
-      insights: isAvailable(probes['insights']),
+      advancedFlow: isOffered(probes['advancedFlow']),
+      energyReports: isOffered(probes['energyReports']),
+      moods: isOffered(probes['moods']),
+      insights: isOffered(probes['insights']),
     },
     probedAt: now().toISOString(),
     notes,
@@ -273,8 +278,30 @@ function managers(connection: HomeyConnection): HomeyManagers {
   return connection.api as HomeyManagers
 }
 
-function isAvailable(outcome: CapabilityProbeOutcome | undefined): boolean {
-  return outcome?.status === 'available'
+/**
+ * Whether the tools that depend on a capability are still worth offering.
+ *
+ * This is not the same question as "did the probe succeed", and reading it as
+ * that question was a bug. These four booleans gate tool registration, the
+ * registry is built once at startup and never rebuilt, and this hub rate limits
+ * its own local API, so a single probe turned away at startup used to hide a
+ * feature for the entire life of the process and tell the model the hardware
+ * cannot do it. That is a permanent lie built out of one bad moment.
+ *
+ * So only a verdict about the hardware closes the door, and `unsupported` is the
+ * only outcome that is one. A probe that failed, and a probe the session was not
+ * allowed to make, both mean "could not determine": the tools stay registered
+ * and a real call then reports the real, current reason, which is far more
+ * useful than a tool that is mysteriously absent. Anything that needs to tell
+ * available apart from unconfirmed reads `probes[name].status`, which keeps all
+ * four outcomes, and the notes above say which it was.
+ */
+function isOffered(outcome: CapabilityProbeOutcome | undefined): boolean {
+  // No outcome means no probe ran at all, which is not evidence of anything.
+  // Left as not offered, because a capability nothing ever checked should not be
+  // advertised on the strength of a missing record.
+  if (outcome === undefined) return false
+  return outcome.status !== 'unsupported'
 }
 
 function statusCodeOf(error: HomeyMcpError): number | null {

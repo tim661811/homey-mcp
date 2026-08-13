@@ -649,7 +649,11 @@ function checkCredentials(
       detail: forSharing
         ? 'A session was found, but it had already expired. Homey sessions last 24 hours.'
         : `Found ${credentials.sourceDescription}, but that session expired at ${credentials.sessionExpiresAt}. Homey sessions last 24 hours.`,
-      fix: 'Run "homey login" to get a fresh session, then start this server again.',
+      // No restart in the instruction on purpose. A running server reads the
+      // credential source again the moment Homey refuses a call, so the new
+      // session is picked up by itself; telling someone to restart their
+      // assistant's MCP server for something that fixes itself is busywork.
+      fix: 'Run "homey login" to get a fresh session. A server that is already running signs in again by itself the next time Homey refuses a call.',
     }
   }
 

@@ -294,7 +294,7 @@ describe('homey_devices_search', () => {
 
   it('strips the protocol settings, artwork and interface layout from every result', async () => {
     const harness = createHarness()
-    const result = await takeTool(harness, 'homey_devices_search').handler({ includeCapabilityValues: true })
+    const result = await takeTool(harness, 'homey_devices_search').handler({ includeCapabilitySummaries: true })
 
     const serialised = JSON.stringify(structuredOf(result))
     for (const forbidden of ['passwd', 'iconObj', 'images', 'componentsStartAt', 'internalReference', 'capabilitiesObj']) {
@@ -350,7 +350,7 @@ describe('homey_devices_search', () => {
     const harness = createHarness()
     const result = await takeTool(harness, 'homey_devices_search').handler({ limit: 2, offset: 0 })
 
-    expect(structuredOf(result)['total']).toBe(5)
+    expect(structuredOf(result)['totalMatches']).toBe(5)
     expect(structuredOf(result)['returned']).toBe(2)
     expect(structuredOf(result)['truncated']).toBe(true)
 
@@ -358,17 +358,48 @@ describe('homey_devices_search', () => {
     expect(structuredOf(lastPage)['truncated']).toBe(false)
   })
 
-  it('omits capability values unless they are asked for', async () => {
+  it('omits capability summaries unless they are asked for', async () => {
     const harness = createHarness()
     const withoutValues = await takeTool(harness, 'homey_devices_search').handler({ nameContains: 'lamp' })
     const withValues = await takeTool(harness, 'homey_devices_search').handler({
       nameContains: 'lamp',
-      includeCapabilityValues: true,
+      includeCapabilitySummaries: true,
     })
 
-    expect(devicesOf(withoutValues)[0]?.['capabilityValues']).toBeUndefined()
-    const values = devicesOf(withValues)[0]?.['capabilityValues'] as Record<string, Record<string, unknown>>
+    expect(devicesOf(withoutValues)[0]?.['capabilitySummaries']).toBeUndefined()
+    const values = devicesOf(withValues)[0]?.['capabilitySummaries'] as Record<string, Record<string, unknown>>
     expect(values['dim']).toEqual({ title: 'Dim level', value: 0.35, units: '%', setable: true })
+  })
+
+  it('does not call its four-field projection by the name homey_device_get uses for the full record', async () => {
+    // One name meant two shapes: four fields here and fourteen from
+    // homey_device_get, both under `capabilityValues`, so anything reading
+    // `capabilityValues.dim.max` worked against one tool and read undefined
+    // against the other. Two shapes, two names, and the range only exists on
+    // the full record.
+    const harness = createHarness()
+    const searched = await takeTool(harness, 'homey_devices_search').handler({
+      nameContains: 'lamp',
+      includeCapabilitySummaries: true,
+    })
+    const summarised = devicesOf(searched)[0] as Record<string, unknown>
+    expect(summarised['capabilityValues']).toBeUndefined()
+
+    const fetched = await takeTool(harness, 'homey_device_get').handler({ device: 'Reading lamp' })
+    const detailed = structuredOf(fetched)['device'] as Record<string, unknown>
+    expect(detailed['capabilitySummaries']).toBeUndefined()
+    const full = (detailed['capabilityValues'] as Record<string, Record<string, unknown>>)['dim']
+    expect(full?.['max']).toBe(1)
+  })
+
+  it('names the match count the way every other search tool names it', async () => {
+    const harness = createHarness()
+    const result = await takeTool(harness, 'homey_devices_search').handler({ limit: 2 })
+
+    const structured = structuredOf(result)
+    expect(structured['total']).toBeUndefined()
+    expect(structured['totalMatches']).toBeGreaterThan(2)
+    expect(structured['returned']).toBe(2)
   })
 })
 
@@ -421,7 +452,10 @@ describe('homey_device_get', () => {
 
     const device = structuredOf(result)['device'] as Record<string, unknown>
     const insights = device['insights'] as Array<Record<string, unknown>>
-    expect(insights.map((entry) => entry['id']).sort()).toEqual(['measure_temperature', 'target_temperature'])
+    expect(insights.map((entry) => entry['logId']).sort()).toEqual([
+      'homey:device:aaaaaaaa-0002-4000-8000-000000000002:measure_temperature',
+      'homey:device:aaaaaaaa-0002-4000-8000-000000000002:target_temperature',
+    ])
     expect(device['insightCount']).toBe(2)
     expect(device['insightsUnavailableReason']).toBeUndefined()
   })
@@ -432,8 +466,29 @@ describe('homey_device_get', () => {
 
     const device = structuredOf(result)['device'] as Record<string, unknown>
     const insights = device['insights'] as Array<Record<string, unknown>>
-    expect(insights.map((entry) => entry['id'])).toEqual(['dim'])
-    expect(insights[0]?.['uri']).toBe('homey:device:aaaaaaaa-0001-4000-8000-000000000001')
+    expect(insights.map((entry) => entry['logId'])).toEqual(['homey:device:aaaaaaaa-0001-4000-8000-000000000001:dim'])
+  })
+
+  it('names a device\'s history the way homey_insights_query names it, and only that way', async () => {
+    // The documented path from a device to its own history was broken. This
+    // tool emitted the owner uri and the short id as two fields, while
+    // homey_insights_query resolves against the composite "<uri>:<id>" that
+    // homey_insights_search already returns as logId. Neither half on its own
+    // is a value the query tool accepts, so the pair is gone rather than kept
+    // beside the identifier that works.
+    const harness = createHarness({ getDevices: async () => withoutTheDeviceInsightsArray(homeFixture.devices) })
+    const result = await takeTool(harness, 'homey_device_get').handler({ device: 'Reading lamp' })
+
+    const device = structuredOf(result)['device'] as Record<string, unknown>
+    const log = (device['insights'] as Array<Record<string, unknown>>)[0]!
+
+    // Exactly what the cache keys the log under, which is what the Insights
+    // tools resolve against.
+    const catalogue = await harness.context.cache.getInsightsLogs()
+    expect(catalogue.byId.has(String(log['logId']))).toBe(true)
+
+    expect(log['uri']).toBeUndefined()
+    expect(log['id']).toBeUndefined()
   })
 
   it('still describes the device when the Insights catalogue cannot be read', async () => {

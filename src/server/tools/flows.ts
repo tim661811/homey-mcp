@@ -85,7 +85,14 @@ function createdFlowsFor(context: ServerContext): Set<string> {
 }
 
 const flowCardInput = z.object({
-  id: z.string().describe('The full card id from homey_flowcards_search, for example homey:device:<uuid>:on.'),
+  // `cardId`, not `id`, because this is the same value homey_flowcards_search
+  // reports and homey_flowcard_describe and homey_flowcard_autocomplete already
+  // take under that name. A caller carries it straight from discovery into
+  // authoring, and a rename in between is a failed call rather than a style
+  // preference. It is also what describeCard emits back, so a flow read out of
+  // homey_flow_get or out of a previousFlow pre-image can be sent straight back
+  // in without being renamed field by field.
+  cardId: z.string().describe('The full card id from homey_flowcards_search, for example homey:device:<uuid>:on.'),
   args: z
     .record(z.string(), z.unknown())
     .optional()
@@ -136,6 +143,15 @@ const advancedNodeInput = z.object({
   outputTrue: z.array(z.string()).optional().describe('Conditions only. Labels of the cards that run when the condition holds.'),
   outputFalse: z.array(z.string()).optional().describe('Conditions only. Labels of the cards that run when it does not.'),
   outputError: z.array(z.string()).optional().describe('Labels of the cards that run when this card fails.'),
+  // Accepted, and emitted by homey_flow_get, because homey_advancedflow_update
+  // replaces the whole graph from what the caller read. Without these two the
+  // canvas the owner arranged by hand cannot survive the trip: applyAutoLayout
+  // leaves a node alone only when it already carries both coordinates, so a
+  // graph read back and sent again with one edge changed came back re-laid-out
+  // from scratch and every card had moved. The owner's arrangement of their own
+  // flow is theirs, not this server's to discard on an unrelated edit.
+  x: z.number().optional().describe('Horizontal position on the canvas. Send back what homey_flow_get reported to keep the layout; omit on a new card and one is chosen.'),
+  y: z.number().optional().describe('Vertical position on the canvas. Send back what homey_flow_get reported to keep the layout; omit on a new card and one is chosen.'),
 })
 
 // ---------------------------------------------------------------------------
@@ -203,7 +219,9 @@ export function registerFlowTools(server: McpServer, context: ServerContext): vo
             totalMatches: matches.length,
             truncated: matches.length > page.length,
             flows: page.map(summariseFlow),
-            ...(unreportedBrokenFlag ? { brokenFlagReportedByHomey: false } : {}),
+            // Spelled exactly as homey_flow_start and homey_home_overview spell
+            // it. One question, one field name, whichever tool answers it.
+            ...(unreportedBrokenFlag ? { brokenReportedByHomey: false } : {}),
           },
         )
       } catch (error) {
@@ -538,11 +556,15 @@ export function registerFlowTools(server: McpServer, context: ServerContext): vo
         flowsCreatedHere.delete(summary.id)
 
         // Rendered in the shape the create tools accept, because rebuilding the
-        // flow from this result is the only undo the Homey offers.
+        // flow from this result is the only undo the Homey offers. Both kinds go
+        // through a describe path for that reason: the advanced branch used to
+        // hand back the internal graph under `nodes`, which
+        // homey_advancedflow_create cannot read at all.
+        const cards = await context.cache.getAllFlowCards()
         const deletedFlow =
           summary.kind === 'advanced'
-            ? (preImage as StoredCanonicalAdvancedFlow)
-            : describeFlow(preImage as StoredCanonicalFlow, await context.cache.getAllFlowCards())
+            ? describeAdvancedFlow(preImage as StoredCanonicalAdvancedFlow, cards)
+            : describeFlow(preImage as StoredCanonicalFlow, cards)
 
         return successResult(`Deleted "${summary.name}". The full definition is in this result if it has to be rebuilt.`, {
           flowId: summary.id,
@@ -627,9 +649,11 @@ export function registerAdvancedFlowTools(server: McpServer, context: ServerCont
             enabled: false,
             folder: { id: folderId, name: MANAGED_FOLDER_NAME },
             url,
-            // The id each label was given, so a follow-up change can address the
-            // same cards.
-            cardIdsByLabel: Object.fromEntries(prepared.keyByLabel),
+            // The node key each label was given, so a follow-up change can
+            // address the same cards. Named for what it holds: these are node
+            // keys in the graph, not flow card ids, and `cardId` already means a
+            // flow card id on this very tool's input.
+            nodeKeysByLabel: Object.fromEntries(prepared.keyByLabel),
             verified: verification.differences.length === 0,
             differences: verification.differences,
           },
@@ -726,10 +750,13 @@ export function registerAdvancedFlowTools(server: McpServer, context: ServerCont
           {
             flowId: summary.id,
             url,
-            cardIdsByLabel: Object.fromEntries(prepared.keyByLabel),
+            nodeKeysByLabel: Object.fromEntries(prepared.keyByLabel),
             verified: verification.differences.length === 0,
             differences: verification.differences,
-            previousFlow: preImage,
+            // The graph exactly as it was, in the shape this tool accepts.
+            // Sending it back undoes the change, which is only true while it is
+            // rendered under `cards` rather than under the internal `nodes`.
+            previousFlow: describeAdvancedFlow(preImage, await context.cache.getAllFlowCards()),
           },
         )
       } catch (error) {
@@ -1064,7 +1091,7 @@ async function resolveFlow(context: ServerContext, reference: string): Promise<F
 // ---------------------------------------------------------------------------
 
 function toCanonicalCard(input: z.infer<typeof flowCardInput>): CanonicalCard {
-  const card: CanonicalCard = { id: input.id, args: input.args ?? {} }
+  const card: CanonicalCard = { id: input.cardId, args: input.args ?? {} }
   if (input.group !== undefined) card.group = input.group
   if (input.inverted !== undefined) card.inverted = input.inverted
   if (input.droptoken !== undefined) card.droptoken = input.droptoken
@@ -1075,7 +1102,7 @@ function toCanonicalCard(input: z.infer<typeof flowCardInput>): CanonicalCard {
 
 /** The inverse, used when an update keeps part of the flow that is already there. */
 function toInputCard(card: CanonicalCard): z.infer<typeof flowCardInput> {
-  const input: z.infer<typeof flowCardInput> = { id: card.id, args: card.args ?? {} }
+  const input: z.infer<typeof flowCardInput> = { cardId: card.id, args: card.args ?? {} }
   if (card.group !== undefined) input.group = card.group
   if (card.inverted !== undefined) input.inverted = card.inverted
   if (card.droptoken !== undefined && card.droptoken !== null) input.droptoken = card.droptoken
@@ -1097,6 +1124,8 @@ function toAdvancedNode(input: z.infer<typeof advancedNodeInput>): AdvancedNode 
   if (input.outputTrue !== undefined) node.outputTrue = input.outputTrue
   if (input.outputFalse !== undefined) node.outputFalse = input.outputFalse
   if (input.outputError !== undefined) node.outputError = input.outputError
+  if (input.x !== undefined) node.x = input.x
+  if (input.y !== undefined) node.y = input.y
   return node
 }
 
@@ -1144,7 +1173,11 @@ function describeCard(card: CanonicalCard, kind: FlowCardKind, cards: FlowCardLo
   // report the wrong title back to the reader.
   const descriptor = cards.get(kind, card.id)
   const described: Record<string, unknown> = {
-    id: card.id,
+    // `cardId`, matching the name flowCardInput accepts and the name the whole
+    // card-discovery surface already uses. It used to be `id`, so every card in
+    // a validated flow, a pre-image or a deleted-flow definition had to be
+    // renamed by hand before any of them could be sent back.
+    cardId: card.id,
     // Resolved so the flow reads without holding a dozen uuids in mind. Null
     // rather than the id repeated, so a card that no longer exists stands out.
     title: descriptor?.title ?? null,
@@ -1193,7 +1226,31 @@ function describeAdvancedNode(node: AdvancedNode, cards: FlowCardLookup): Record
     if (targets !== undefined && targets.length > 0) described[port] = targets
   }
   if (node.input !== undefined && node.input.length > 0) described['input'] = node.input
+  // Round-trippable for the same reason droptoken and colour are: the update
+  // tool replaces the whole graph, and a node that comes back without its
+  // coordinates is laid out again from scratch, which rearranges a canvas the
+  // owner may have arranged themselves.
+  if (typeof node.x === 'number') described['x'] = node.x
+  if (typeof node.y === 'number') described['y'] = node.y
   return described
+}
+
+/**
+ * Renders an advanced flow in the shape the advanced authoring tools accept back.
+ *
+ * The exact counterpart of `describeFlow`, and it exists for the exact same
+ * reason. `homey_advancedflow_update.previousFlow` and
+ * `homey_flow_delete.deletedFlow` both promise that sending the value back
+ * rebuilds what was there, and for an advanced flow that promise was false:
+ * internally the graph is `nodes`, while `homey_advancedflow_create` and
+ * `homey_advancedflow_update` take it as `cards`. Zod drops an unrecognised key
+ * without a word, so `cards` was then missing and the call failed on a required
+ * field the caller had never been shown. Rebuilding from the result is the only
+ * undo the Homey offers for a delete, so this is the whole value of that result.
+ */
+function describeAdvancedFlow(flow: CanonicalAdvancedFlow, cards: FlowCardLookup): Record<string, unknown> {
+  const { nodes, ...rest } = flow
+  return { ...rest, cards: nodes.map((node) => describeAdvancedNode(node, cards)) }
 }
 
 // ---------------------------------------------------------------------------

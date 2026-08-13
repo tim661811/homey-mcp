@@ -636,6 +636,34 @@ describe('homey_flowcard_autocomplete', () => {
     expect(harness.autocompleteCalls).toEqual([])
   })
 
+  it('describes the argument the same way on both branches, so one reader works on either', async () => {
+    // One tool, two shapes for one field: an object on the branch that cannot
+    // resolve and a bare string on the branch that can, told apart only by the
+    // sibling `resolvable` flag. Anything reading `result.argument.name` worked
+    // on one call and read a property off a string on the next.
+    const harness = createHarness()
+
+    const notResolvable = await takeTool(harness, 'homey_flowcard_autocomplete').handler({
+      cardId: 'homey:device:aaaaaaaa-0001-4000-8000-000000000001:onoff',
+      argument: 'onoff',
+    })
+    const resolvable = await takeTool(harness, 'homey_flowcard_autocomplete').handler({
+      cardId: 'homey:app:com.example.cast:tts',
+      argument: 'device',
+    })
+
+    for (const result of [notResolvable, resolvable]) {
+      const argument = structuredOf(result)['argument']
+      expect(typeof argument).toBe('object')
+      expect(Object.keys(argument as Record<string, unknown>).sort()).toEqual(['name', 'type', 'values'])
+      expect(typeof structuredOf(result)['cardId']).toBe('string')
+    }
+
+    expect((structuredOf(notResolvable)['argument'] as Record<string, unknown>)['name']).toBe('onoff')
+    expect((structuredOf(resolvable)['argument'] as Record<string, unknown>)['name']).toBe('device')
+    expect((structuredOf(resolvable)['argument'] as Record<string, unknown>)['type']).toBe('autocomplete')
+  })
+
   it('names the arguments the card does have when asked for one it does not', async () => {
     const harness = createHarness()
     const result = await takeTool(harness, 'homey_flowcard_autocomplete').handler({

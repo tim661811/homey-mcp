@@ -30,6 +30,15 @@ function forbidden(): Error & { statusCode: number } {
 }
 
 /**
+ * What this hub answers when four requests arrive in quick succession. Measured
+ * on the hardware, undocumented, and the reason a startup probe can fail on a
+ * feature that works perfectly.
+ */
+function rateLimited(): Error & { statusCode: number } {
+  return Object.assign(new Error('Too many requests'), { statusCode: 429 })
+}
+
+/**
  * Exactly what the hub answers for a method this firmware does not have.
  * Measured over raw HTTP against the 2019 hardware: HTTP 500, and the only
  * usable part of it is the bracketed code, because the prose is in the
@@ -48,6 +57,8 @@ function fakeConnection(
   options: {
     getLogsFails?: () => Error
     getStorageInfoFails?: () => Error
+    /** Advanced Flow has no fallback route, so it is the clean case for a single probe failing. */
+    getAdvancedFlowsFails?: () => Error
     /** Raw routes that fail, keyed by path, for the probes with no manager method. */
     rawPathFails?: Record<string, () => Error>
   } = {},
@@ -58,7 +69,12 @@ function fakeConnection(
   const calls: RecordedCall[] = []
 
   const api = {
-    flow: { getAdvancedFlows: async () => [] },
+    flow: {
+      getAdvancedFlows: async () => {
+        if (options.getAdvancedFlowsFails !== undefined) throw options.getAdvancedFlowsFails()
+        return []
+      },
+    },
     energy: { getLiveReport: async () => ({}) },
     moods: { getMoods: async () => [] },
     insights: {
@@ -214,8 +230,70 @@ describe('detectCapabilities', () => {
     const registry = await detectCapabilities(connection)
 
     expect(registry.probes?.['insights']?.status).toBe('forbidden')
-    expect(registry.hardware.insights).toBe(false)
     expect(calls.some((call) => call.label.endsWith('(fallback)'))).toBe(false)
     expect(registry.notes.join('\n')).toContain('homey login')
+    // Not reported as available either, which is the point of the paragraph
+    // above. The status stays `forbidden`, so nothing downstream can read this
+    // as a working feature.
+    expect(registry.probes?.['insights']?.status).not.toBe('available')
+  })
+
+  // A registry with no probe detail cannot tell an absent feature from a probe
+  // that never completed, so these four booleans are the last thing standing
+  // between a bad moment at startup and a permanent claim about someone's
+  // hardware. They gate tool registration and the registry is never rebuilt.
+  describe('what the hardware booleans mean when a probe did not answer', () => {
+    it('keeps a capability offered when its probe failed rather than answered', async () => {
+      // The blocker. This hub rate limits its own local API, undocumented and
+      // measured at four rapid requests, so a probe can fail on a feature that
+      // works. Collapsing that into the same false as "the endpoint is absent"
+      // unregistered the Advanced Flow tools for the life of the process and
+      // told the model this hardware cannot author them.
+      const { connection } = fakeConnection({ getAdvancedFlowsFails: rateLimited })
+
+      const registry = await detectCapabilities(connection)
+
+      expect(registry.probes?.['advancedFlow']?.status).toBe('failed')
+      expect(registry.hardware.advancedFlow).toBe(true)
+    })
+
+    it('still switches a capability off when the hub says the endpoint is absent', async () => {
+      // The other half of the same distinction. Keeping a failed probe offered
+      // is only correct as long as a real hardware verdict still closes the
+      // door, otherwise the fix would advertise features no hub has.
+      const { connection } = fakeConnection({ getAdvancedFlowsFails: missingApiMethod })
+
+      const registry = await detectCapabilities(connection)
+
+      expect(registry.probes?.['advancedFlow']?.status).toBe('unsupported')
+      expect(registry.hardware.advancedFlow).toBe(false)
+    })
+
+    it('reads a refused probe as undetermined rather than as absent hardware', async () => {
+      // A refused scope is a fact about the session, not about the hub. Hiding
+      // the tools hides the one thing the user can act on; leaving them
+      // registered means a real call answers with the permissions error that
+      // names "homey login".
+      const { connection } = fakeConnection({ getAdvancedFlowsFails: forbidden })
+
+      const registry = await detectCapabilities(connection)
+
+      expect(registry.probes?.['advancedFlow']?.status).toBe('forbidden')
+      expect(registry.hardware.advancedFlow).toBe(true)
+    })
+
+    it('tells the reader a failed probe can be retried by restarting', async () => {
+      // The note used to end "Treating it as unavailable", which reads as a
+      // settled answer about the hub and names nothing anyone can do.
+      const { connection } = fakeConnection({ getAdvancedFlowsFails: rateLimited })
+
+      const registry = await detectCapabilities(connection)
+
+      const notes = registry.notes.join('\n')
+      expect(notes).toContain('Could not determine')
+      expect(notes).toContain('restart this server')
+      expect(notes).not.toContain('Treating it as unavailable')
+      expect(notes).not.toContain('does not offer Advanced Flow authoring')
+    })
   })
 })

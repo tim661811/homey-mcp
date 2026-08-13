@@ -28,6 +28,15 @@ const HUB_SESSION_TOKEN = `${'aB3dEf9h'.repeat(8)}`
 const library = vi.hoisted(() => ({
   /** Options every directly constructed HomeyAPIV2 / HomeyAPIV3Local was given. */
   directConstructions: [] as Array<Record<string, unknown>>,
+  /**
+   * Which library class each construction actually used, in order.
+   *
+   * The whole design rests on the dialect verdict selecting the matching client
+   * class, and the two classes shape reads and writes differently, so the class
+   * that was picked has to be observable. Mapping both names onto one fake made
+   * every dialect test pass whichever class the code chose.
+   */
+  constructedApiClassNames: [] as string[],
   cloudApiConstructions: 0,
   authenticateCalls: 0,
   /** What the Athom cloud says about where this Homey answers. */
@@ -37,6 +46,8 @@ const library = vi.hoisted(() => ({
   cloudFailure: null as Error | null,
   /** What `system.getInfo()` says the hub's own network address is. */
   wifiAddress: null as string | null,
+  /** The generation the fake hub answers as, which decides the flow card shape it serves. */
+  hubDialect: 'v2' as 'v2' | 'v3',
 }))
 
 vi.mock('homey-api', () => {
@@ -49,6 +60,12 @@ vi.mock('homey-api', () => {
   })
 
   class FakeHomeyApi {
+    /**
+     * Read through `this.constructor` in the base constructor, so it must be
+     * static: a subclass instance field is not initialised yet at that point.
+     */
+    static readonly className: string = 'FakeHomeyApi'
+
     id = HOMEY_ID
     name = 'Home'
     language = 'en'
@@ -61,12 +78,23 @@ vi.mock('homey-api', () => {
 
     constructor(options: Record<string, unknown> = {}) {
       library.directConstructions.push(options)
+      library.constructedApiClassNames.push((this.constructor as typeof FakeHomeyApi).className)
     }
 
     async call({ path }: { method: string; path: string }): Promise<unknown> {
-      if (path.includes('flowcardtrigger')) return v2CardDescriptor()
+      if (path.includes('flowcardtrigger')) return cardDescriptor()
       return {}
     }
+  }
+
+  // Two distinguishable classes, because "which one did the code construct" is
+  // the question these tests exist to answer.
+  class FakeHomeyApiV2 extends FakeHomeyApi {
+    static override readonly className: string = 'HomeyAPIV2'
+  }
+
+  class FakeHomeyApiV3Local extends FakeHomeyApi {
+    static override readonly className: string = 'HomeyAPIV3Local'
   }
 
   class FakeAthomCloudApi {
@@ -86,7 +114,10 @@ vi.mock('homey-api', () => {
         localUrlSecure: library.cloudLocalUrlSecure,
         authenticate: async () => {
           library.authenticateCalls += 1
-          return new FakeHomeyApi()
+          // The real cloud route is where the library picks the class itself,
+          // from the Homey's registered apiVersion, so the fake picks the one
+          // matching the generation this hub is standing in for.
+          return library.hubDialect === 'v3' ? new FakeHomeyApiV3Local() : new FakeHomeyApiV2()
         },
       }
       return {
@@ -98,14 +129,28 @@ vi.mock('homey-api', () => {
 
   return {
     AthomCloudAPI: FakeAthomCloudApi,
-    HomeyAPIV2: FakeHomeyApi,
-    HomeyAPIV3Local: FakeHomeyApi,
+    HomeyAPIV2: FakeHomeyApiV2,
+    HomeyAPIV3Local: FakeHomeyApiV3Local,
   }
 })
 
 /** The V2 shape: a separate owner uri and a short id. */
 function v2CardDescriptor(): Record<string, unknown> {
   return { uri: 'homey:manager:flow', id: 'programmatic_trigger', title: 'Programmatic trigger' }
+}
+
+/** The V3 shape: one owner uri field and a single fully qualified id. */
+function v3CardDescriptor(): Record<string, unknown> {
+  return {
+    ownerUri: 'homey:manager:flow',
+    id: 'homey:manager:flow:programmatic_trigger',
+    title: 'Programmatic trigger',
+  }
+}
+
+/** Whatever the hub of the moment answers with. One source of truth for both routes. */
+function cardDescriptor(): Record<string, unknown> {
+  return library.hubDialect === 'v3' ? v3CardDescriptor() : v2CardDescriptor()
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -127,6 +172,12 @@ interface FetchScript {
   reachableAddresses: string[]
   /** Status the authenticated dialect probe answers with. 200 unless a test says otherwise. */
   dialectProbeStatus?: number
+  /**
+   * Status for the single-card path only, leaving the card list answering
+   * normally. A hub that keys its cards by fully qualified id answers 404 there,
+   * which is how the dialect probe reaches its second step.
+   */
+  singleCardProbeStatus?: number
 }
 
 function scriptedFetch(script: FetchScript): { implementation: typeof fetch; requestedUrls: string[] } {
@@ -144,7 +195,16 @@ function scriptedFetch(script: FetchScript): { implementation: typeof fetch; req
     if (url.includes('flowcardtrigger')) {
       const status = script.dialectProbeStatus ?? 200
       if (status !== 200) return jsonResponse({ error: 'Invalid Token' }, status)
-      return jsonResponse(v2CardDescriptor())
+
+      const isCardList = url.endsWith('/flowcardtrigger')
+      if (isCardList) {
+        const descriptor = cardDescriptor()
+        return jsonResponse({ [String(descriptor['id'])]: descriptor })
+      }
+
+      const singleCardStatus = script.singleCardProbeStatus ?? 200
+      if (singleCardStatus !== 200) return jsonResponse({ error: 'Not Found' }, singleCardStatus)
+      return jsonResponse(cardDescriptor())
     }
 
     throw new Error(`Unexpected request in this test: ${url}`)
@@ -191,6 +251,8 @@ let cachePath: string
 
 beforeEach(async () => {
   library.directConstructions = []
+  library.constructedApiClassNames = []
+  library.hubDialect = 'v2'
   library.cloudApiConstructions = 0
   library.authenticateCalls = 0
   library.cloudLocalUrl = LAN_ADDRESS
@@ -300,6 +362,11 @@ describe('connectToHomey', () => {
     expect(failure.reason).toBe('not_connected')
     expect(failure.message).toContain('homey login')
     expect(failure.message).toContain('24 hours')
+    // Every message is redacted on its way into the error, and the redactor
+    // masks whatever follows the word "token", because that is the shape of an
+    // Authorization header. This sentence used to say "no Athom account token
+    // alongside it" and reached the user as "token alon...[9 chars] it".
+    expect(failure.message).not.toContain('chars]')
     // Nothing was attempted against the hub with a token known to be dead.
     expect(library.cloudApiConstructions).toBe(0)
   })
@@ -481,5 +548,86 @@ describe('connectToHomey', () => {
     expect(failure).toBeInstanceOf(HomeyMcpError)
     expect(failure.reason).toBe('not_connected')
     expect(failure.message).toContain('doctor')
+  })
+})
+
+/**
+ * The class the dialect verdict selects.
+ *
+ * This is the one decision the whole design rests on. V2 splits a flow card into
+ * a separate uri and a short id while V3 carries one fully qualified id, so the
+ * two client classes read and write different shapes, and picking the wrong one
+ * connects perfectly happily and then corrupts writes. The hardware to check it
+ * on is not here, so the decision is what gets tested: a V3 descriptor must
+ * reach HomeyAPIV3Local and a V2 descriptor must reach HomeyAPIV2, with the two
+ * classes distinguishable rather than mapped onto one fake.
+ *
+ * Every test here goes over the LAN route on a remembered address, because that
+ * is the route where this server picks the class itself. Over the Athom cloud
+ * the library picks it from the Homey's registered apiVersion.
+ */
+describe('the client class the dialect verdict selects', () => {
+  async function connectOverLan(): Promise<{ dialect: string; evidence: string }> {
+    await writeFile(
+      cachePath,
+      JSON.stringify({ [HOMEY_ID]: { localAddress: LAN_ADDRESS, localSecureAddress: null } }),
+    )
+
+    const { implementation } = scriptedFetch({ reachableAddresses: [LAN_ADDRESS] })
+    const connection = await connectToHomey(credentials(), {
+      fetchImplementation: implementation,
+      hubAddressCachePath: cachePath,
+    })
+
+    // Anything else means the library chose the class rather than this server.
+    expect(connection.diagnostics.route).toBe('lan_session')
+    expect(library.cloudApiConstructions).toBe(0)
+
+    return { dialect: connection.dialect, evidence: connection.diagnostics.dialectEvidence }
+  }
+
+  it('constructs HomeyAPIV3Local when the hub answers in the V3 shape', async () => {
+    library.hubDialect = 'v3'
+
+    const { dialect, evidence } = await connectOverLan()
+
+    expect(dialect).toBe('v3')
+    expect(evidence).toContain('ownerUri')
+    expect(library.constructedApiClassNames).toEqual(['HomeyAPIV3Local'])
+  })
+
+  it('constructs HomeyAPIV2 when the hub answers in the V2 shape', async () => {
+    library.hubDialect = 'v2'
+
+    const { dialect, evidence } = await connectOverLan()
+
+    expect(dialect).toBe('v2')
+    expect(evidence).toContain('short id')
+    expect(library.constructedApiClassNames).toEqual(['HomeyAPIV2'])
+  })
+
+  it('still reaches HomeyAPIV3Local when the V3 verdict comes from the card list', async () => {
+    // A hub that keys its cards by fully qualified id answers the single-card
+    // path with a 404, so the verdict arrives one step later. The class it
+    // selects must not depend on which step produced it.
+    library.hubDialect = 'v3'
+    await writeFile(
+      cachePath,
+      JSON.stringify({ [HOMEY_ID]: { localAddress: LAN_ADDRESS, localSecureAddress: null } }),
+    )
+
+    const { implementation } = scriptedFetch({
+      reachableAddresses: [LAN_ADDRESS],
+      singleCardProbeStatus: 404,
+    })
+
+    const connection = await connectToHomey(credentials(), {
+      fetchImplementation: implementation,
+      hubAddressCachePath: cachePath,
+    })
+
+    expect(connection.dialect).toBe('v3')
+    expect(library.constructedApiClassNames).toEqual(['HomeyAPIV3Local'])
+    expect(library.cloudApiConstructions).toBe(0)
   })
 })

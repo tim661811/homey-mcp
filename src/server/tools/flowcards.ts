@@ -273,12 +273,21 @@ export function registerFlowCardTools(server: McpServer, context: ServerContext)
           })
         }
 
+        // `argument` is the same object on both branches below, deliberately.
+        // It used to be this record here and a bare string on the resolvable
+        // branch, discriminated only by the sibling `resolvable` flag, so a
+        // consumer reading `result.argument.name` worked on one call and read
+        // undefined off a string on the next. One field, one shape, whichever
+        // branch answers.
+        const describedArgument = { name: argument.name, type: argument.type, values: argument.values }
+
         if (argument.type !== 'autocomplete' && argument.type !== 'device') {
           return successResult(
             `"${input.argument}" is a ${argument.type} argument, so it is not resolved through the Homey.`,
             {
               resolvable: false,
-              argument: { name: argument.name, type: argument.type, values: argument.values },
+              cardId: card.id,
+              argument: describedArgument,
               guidance:
                 argument.values.length > 0
                   ? 'Send one of the listed ids as the argument value.'
@@ -298,7 +307,7 @@ export function registerFlowCardTools(server: McpServer, context: ServerContext)
           {
             resolvable: true,
             cardId: card.id,
-            argument: argument.name,
+            argument: describedArgument,
             truncated: results.length > page.length,
             // Named `value` rather than `result` to say plainly what to do with
             // it: this exact object is what the argument is set to.

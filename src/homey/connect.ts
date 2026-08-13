@@ -163,6 +163,245 @@ export async function connectToHomey(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Surviving the 24 hour session wall
+// ---------------------------------------------------------------------------
+
+/**
+ * How long to wait before trying to rebuild a session again after an attempt.
+ *
+ * A rebuild walks the whole address ladder, so without a floor a Homey that is
+ * simply off the network would get one full ladder walk per tool call. Long
+ * enough to keep that quiet, short enough that a user who has just run
+ * "homey login" does not sit waiting.
+ */
+export const DEFAULT_SESSION_RETRY_INTERVAL_MS = 30_000
+
+export interface ReconnectingConnectionOptions {
+  /** The credentials the first connection is made with, already resolved. */
+  credentials: ResolvedCredentials
+  /**
+   * Reads the credential source again. Called before every rebuild and its
+   * answer is never cached, because the file on disk is routinely newer than
+   * what this process started with: the Homey CLI refreshes its own session in
+   * the same file, so by the time a 24 hour session dies the replacement is
+   * often already sitting there.
+   */
+  loadCredentials: () => Promise<ResolvedCredentials>
+  logger?: Logger
+  /** Passed to every connect, first and later. */
+  connectOptions?: ConnectToHomeyOptions
+  /** Injected by tests. Defaults to `connectToHomey`. */
+  connectImplementation?: (
+    credentials: ResolvedCredentials,
+    options: ConnectToHomeyOptions,
+  ) => Promise<HomeyConnectionWithDiagnostics>
+  retryIntervalMs?: number
+  /** Injected by tests so the cooldown does not depend on the wall clock. */
+  now?: () => number
+}
+
+export interface ReconnectingConnection extends HomeyConnectionWithDiagnostics {
+  /** 1 for the session the server started with, one more for every rebuild. */
+  readonly sessionCount: number
+  /** Closes whichever session is current. */
+  close(): Promise<void>
+}
+
+/**
+ * A connection that survives its own session expiring.
+ *
+ * Measured on the hardware: a hub session lasts exactly 24 hours. An MCP server
+ * is normally left running, so the interesting lifetime of this process is days,
+ * and a connection that is resolved once at startup means every tool call after
+ * the first day fails with no route back from inside the process. The user sees
+ * a server that worked yesterday and answers nothing today.
+ *
+ * Three things make the rebuild honest:
+ *
+ * The credential source is read again rather than reused, because the session
+ * that replaces the dead one usually already exists on disk.
+ *
+ * Only a call that declared itself idempotent is repeated afterwards. A write
+ * that failed is reported, with its session renewed, so the caller decides
+ * whether to send it again. Repeating it here is exactly the case the
+ * idempotency rule forbids, and it is not a theoretical one: the request queue
+ * once started the same flow four times.
+ *
+ * `api` is a live view of the current session rather than a captured object.
+ * Everything downstream reads `connection.api` once and holds it: `createHomeCache`
+ * captures it at construction and keeps it for the life of the process, and each
+ * tool captures it at the top of a handler. Swapping a plain property would
+ * leave every one of those holding the dead client, so the rebuild would change
+ * nothing anybody can see.
+ */
+export async function openReconnectingConnection(
+  options: ReconnectingConnectionOptions,
+): Promise<ReconnectingConnection> {
+  const logger = (options.logger ?? defaultLogger).child('session')
+  const connect = options.connectImplementation ?? connectToHomey
+  const retryIntervalMs = options.retryIntervalMs ?? DEFAULT_SESSION_RETRY_INTERVAL_MS
+  const now = options.now ?? (() => Date.now())
+
+  // One queue for the hub, not one per session. The hub rate limits itself, so a
+  // second queue would let a rebuild's traffic race the queue it was meant to be
+  // spaced against, and `doctor` reports this queue's depth.
+  const queue = options.connectOptions?.queue ?? createRequestQueue({ logger })
+  const connectOptions: ConnectToHomeyOptions = { ...options.connectOptions, logger, queue }
+
+  let current = await connect(options.credentials, connectOptions)
+  let sessionCount = 1
+
+  let rebuildInFlight: Promise<void> | null = null
+  let lastAttemptAt = Number.NEGATIVE_INFINITY
+  /** Why the last rebuild failed, so the calls inside the cooldown say that instead of the raw refusal. */
+  let lastRebuildFailure: HomeyMcpError | null = null
+
+  async function rebuild(): Promise<void> {
+    const credentials = await options.loadCredentials()
+    const next = await connect(credentials, connectOptions)
+    const previous = current
+    current = next
+    sessionCount += 1
+    lastRebuildFailure = null
+    // After the swap, so a slow teardown cannot delay the calls that are waiting
+    // for the new session, and a failing one cannot undo it.
+    await disconnectFromHomey(previous)
+    logger.info('Signed in again after Homey refused the previous session', {
+      session: sessionCount,
+      route: next.diagnostics.route,
+      addressKind: next.identity.addressKind,
+    })
+  }
+
+  /**
+   * Rebuilds at most one session at a time, and at most one per retry interval.
+   *
+   * Concurrent callers share the attempt rather than each starting one: without
+   * that, a client that fires several tool calls at once would sign in several
+   * times over, on a hub that refuses requests arriving together.
+   */
+  async function ensureFreshSession(trigger: HomeyMcpError): Promise<void> {
+    if (rebuildInFlight !== null) return await rebuildInFlight
+
+    if (now() - lastAttemptAt < retryIntervalMs) {
+      // Already tried a moment ago. Reporting the reason that attempt failed is
+      // more use than the refusal this call saw, because it is the one that
+      // names the command to run.
+      throw lastRebuildFailure ?? trigger
+    }
+
+    lastAttemptAt = now()
+    logger.warn('Homey refused the session, reading the credentials again to sign in once more', {
+      reason: trigger.reason,
+    })
+
+    // Wrapped inside the shared promise rather than around the await, so a
+    // caller that joined an attempt in progress is told exactly what the caller
+    // that started it was told.
+    const attempt = (async (): Promise<void> => {
+      try {
+        await rebuild()
+      } catch (error) {
+        const failure = classifyError(error, { operation: 'reconnect' })
+        // Kept so every later call inside the cooldown gets this sentence rather
+        // than a bare refusal, and so nothing repeats a stack trace per call.
+        lastRebuildFailure = new HomeyMcpError(
+          failure.reason,
+          `The Homey session this server started with is no longer accepted, and signing in again did not work either. ${failure.message}`,
+          { ...failure.details, sessions: sessionCount },
+          { cause: error },
+        )
+        throw lastRebuildFailure
+      }
+    })()
+
+    rebuildInFlight = attempt
+    try {
+      await attempt
+    } finally {
+      rebuildInFlight = null
+    }
+  }
+
+  async function request<T>(operation: () => Promise<T>, label: string, idempotent = false): Promise<T> {
+    try {
+      return await current.request(operation, label, idempotent)
+    } catch (error) {
+      const failure = classifyError(error, { operation: label })
+      // `not_connected` is the only reason a new session can fix: the hub
+      // refused the credential, or nothing answered at the address this session
+      // was built on. Every other reason describes the request rather than the
+      // connection, and reconnecting would only hide it.
+      if (failure.reason !== 'not_connected') throw failure
+
+      await ensureFreshSession(failure)
+
+      if (!idempotent) {
+        throw new HomeyMcpError(
+          'transient',
+          `Homey refused the session while running ${label}, so it did not carry this call out. This server has signed in again, so the call can simply be made once more. It was not repeated automatically because it changes something in your home, and this server never repeats one of those by itself.`,
+          { ...failure.details, sessionRenewed: true },
+          { cause: error },
+        )
+      }
+
+      // A read, so repeating it changes nothing. It runs against the session
+      // that has just replaced the dead one, because `operation` reaches the hub
+      // through the live `api` view above.
+      return await current.request(operation, label, idempotent)
+    }
+  }
+
+  return {
+    // A live view rather than the current session's object: see the note above.
+    api: createLiveApiView(() => current.api),
+    get dialect(): HomeyDialect {
+      return current.dialect
+    },
+    get identity(): HomeyIdentity {
+      return current.identity
+    },
+    get diagnostics(): ConnectionDiagnostics {
+      return current.diagnostics
+    },
+    get sessionCount(): number {
+      return sessionCount
+    },
+    queue,
+    request,
+    close: async (): Promise<void> => {
+      await disconnectFromHomey(current)
+    },
+  }
+}
+
+/**
+ * A stand-in for the `homey-api` instance that always reads the current one.
+ *
+ * Only `get` and `has` are trapped, which is every way this codebase touches the
+ * instance: it reads a manager (`api.devices`) or calls a method on the instance
+ * itself (`api.call(...)`, `api.destroy()`).
+ *
+ * Methods are bound to the real instance on the way out. The library's own
+ * methods read private class fields, and a private field read throws a TypeError
+ * when `this` is a proxy rather than the instance the field was installed on. A
+ * manager object is handed back untouched, so calls into it never pass through
+ * here at all.
+ */
+function createLiveApiView(readApi: () => unknown): unknown {
+  return new Proxy(Object.create(null) as object, {
+    get(_target, property): unknown {
+      const api = readApi() as object
+      const value = Reflect.get(api, property, api)
+      return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(api) : value
+    },
+    has(_target, property): boolean {
+      return Reflect.has(readApi() as object, property)
+    },
+  })
+}
+
 /** Closes the connection's transport. Safe to call on a connection that never opened a socket. */
 export async function disconnectFromHomey(connection: HomeyConnection): Promise<void> {
   try {
@@ -263,7 +502,11 @@ function assertSessionUsable(credentials: ResolvedCredentials, now: Date): void 
 
   throw new HomeyMcpError(
     'not_connected',
-    `The Homey session in ${credentials.sourceDescription} expired at ${credentials.sessionExpiresAt ?? 'an unknown time'}, and there is no Athom account token alongside it to get a new one with. Homey sessions last exactly 24 hours, so this is expected rather than a fault. Run "homey login" to sign in again, then restart this server.`,
+    // "no Athom account credential beside it" rather than "no Athom account
+    // token alongside it": the redactor masks whatever follows the word "token",
+    // because that is what an Authorization header looks like, so the sentence
+    // reached the user as "no Athom account token alon...[9 chars] it".
+    `The Homey session in ${credentials.sourceDescription} expired at ${credentials.sessionExpiresAt ?? 'an unknown time'}, and there is no Athom account credential beside it to get a new one with. Homey sessions last exactly 24 hours, so this is expected rather than a fault. Run "homey login" to sign in again. A server that is already running picks the new session up by itself; one that has stopped needs starting again.`,
     {
       sessionExpiresAt: credentials.sessionExpiresAt,
       credentialSource: credentials.source,
