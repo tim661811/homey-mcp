@@ -1,0 +1,749 @@
+{
+  "_note": "Hand-built stand-in for a Homey Pro, carrying no household data. Every shape here was copied from a real capture; the quirks each part pins are listed below and are asserted in src/server/tools/*.test.ts. Payloads arrive from the hub as object maps keyed by id, which is why these are objects rather than arrays.",
+  "_quirks": {
+    "devices.dim": "units read '%' while min is 0 and max is 1, so 60 percent is 0.6. This is the percentage trap.",
+    "devices.volume_set": "second capability with the same percentage trap, on a different device class.",
+    "devices.target_temperature": "a genuine unit-bearing number with min, max and step, where clamping to the device range is the right answer.",
+    "devices.thermostat_mode": "an enum capability carries its allowed values as {id, title} pairs.",
+    "devices.settings": "a real device stores its account password here. Nothing in this server may ever project settings into a tool result.",
+    "devices.images/ui/flags/data/iconObj": "pure noise that dominates the 4 KB average size of a real device record.",
+    "devices.meter_power.consumed": "sub-capabilities are named with a dot, so a capability filter has to prefix match.",
+    "devices.energyObj.cumulative": "marks a meter that only counts up and must never be averaged.",
+    "devices.virtualClass": "the owner can override the device class; the override wins and the declared class is kept alongside.",
+    "devices.available": "an unreachable device carries unavailableMessage and must not be written to.",
+    "zones.parent": "a zone whose parent is not in the index must still appear in the tree, otherwise its devices vanish.",
+    "flows.triggerCount": "firmware-computed and read-only, and it moves on every start.",
+    "flows.broken": "firmware-computed; starting a broken flow always fails.",
+    "apps.author.email": "app metadata carries contact details that have no business in a tool result."
+  },
+
+  "zones": {
+    "11111111-1111-4111-8111-111111111111": {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "name": "Home",
+      "order": 1,
+      "parent": null,
+      "active": true,
+      "activeLastUpdated": "2026-08-13T08:02:32.565Z",
+      "icon": "home"
+    },
+    "22222222-2222-4222-8222-222222222222": {
+      "id": "22222222-2222-4222-8222-222222222222",
+      "name": "Living room",
+      "order": 2,
+      "parent": "11111111-1111-4111-8111-111111111111",
+      "active": false,
+      "activeLastUpdated": null,
+      "icon": "living"
+    },
+    "33333333-3333-4333-8333-333333333333": {
+      "id": "33333333-3333-4333-8333-333333333333",
+      "name": "Reading nook",
+      "order": 3,
+      "parent": "22222222-2222-4222-8222-222222222222",
+      "active": false,
+      "activeLastUpdated": null,
+      "icon": "default"
+    },
+    "44444444-4444-4444-8444-444444444444": {
+      "id": "44444444-4444-4444-8444-444444444444",
+      "name": "Bedroom",
+      "order": 4,
+      "parent": "11111111-1111-4111-8111-111111111111",
+      "active": false,
+      "activeLastUpdated": null,
+      "icon": "bedroomDouble"
+    },
+    "55555555-5555-4555-8555-555555555555": {
+      "id": "55555555-5555-4555-8555-555555555555",
+      "name": "Attic",
+      "order": 5,
+      "parent": "99999999-9999-4999-8999-999999999999",
+      "active": false,
+      "activeLastUpdated": null,
+      "icon": "default"
+    }
+  },
+
+  "devices": {
+    "aaaaaaaa-0001-4000-8000-000000000001": {
+      "id": "aaaaaaaa-0001-4000-8000-000000000001",
+      "name": "Reading lamp",
+      "driverUri": "homey:app:com.example.lights",
+      "driverId": "bulb",
+      "zone": "22222222-2222-4222-8222-222222222222",
+      "zoneName": "Living room",
+      "icon": null,
+      "iconObj": { "id": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f", "url": "/icon/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f/icon.svg" },
+      "iconOverride": null,
+      "settings": { "transition_time": 1 },
+      "settingsObj": false,
+      "class": "light",
+      "virtualClass": null,
+      "energy": null,
+      "energyObj": {
+        "W": 8.4,
+        "batteries": null,
+        "cumulative": null,
+        "homeBattery": null,
+        "electricCar": null,
+        "evCharger": null,
+        "generator": null
+      },
+      "capabilities": ["onoff", "dim"],
+      "capabilitiesObj": {
+        "onoff": {
+          "value": false,
+          "lastUpdated": "2026-08-12T22:00:00.104Z",
+          "type": "boolean",
+          "getable": true,
+          "setable": true,
+          "title": "Turned on",
+          "titleShort": null,
+          "desc": null,
+          "units": null,
+          "id": "onoff",
+          "options": { "setOnDim": false }
+        },
+        "dim": {
+          "value": 0.35,
+          "lastUpdated": "2026-08-12T20:54:24.058Z",
+          "type": "number",
+          "getable": true,
+          "setable": true,
+          "title": "Dim level",
+          "titleShort": null,
+          "desc": null,
+          "units": "%",
+          "decimals": 2,
+          "min": 0,
+          "max": 1,
+          "chartType": "stepLine",
+          "id": "dim",
+          "options": { "opts": { "duration": true } }
+        }
+      },
+      "flags": ["sticky"],
+      "ui": {
+        "quickActionOverride": null,
+        "quickAction": "onoff",
+        "components": [
+          { "id": "toggle", "capabilities": ["onoff"] },
+          { "id": "slider", "capabilities": ["dim"] }
+        ],
+        "componentsStartAt": 1
+      },
+      "uiIndicator": null,
+      "ready": true,
+      "available": true,
+      "repair": false,
+      "unpair": false,
+      "unavailableMessage": null,
+      "images": [{ "id": "image-one", "url": "/api/image/image-one", "type": "measure" }],
+      "insights": [
+        {
+          "uri": "homey:device:aaaaaaaa-0001-4000-8000-000000000001",
+          "id": "dim",
+          "type": "number",
+          "title": "Dim level",
+          "titleTrue": null,
+          "titleFalse": null,
+          "units": "%",
+          "decimals": 2
+        }
+      ],
+      "note": null,
+      "data": { "internalReference": "not-useful-to-a-model" }
+    },
+
+    "aaaaaaaa-0002-4000-8000-000000000002": {
+      "id": "aaaaaaaa-0002-4000-8000-000000000002",
+      "name": "Bedroom radiator",
+      "driverUri": "homey:app:com.example.heating",
+      "driverId": "valve",
+      "zone": "44444444-4444-4444-8444-444444444444",
+      "zoneName": "Bedroom",
+      "icon": null,
+      "iconObj": null,
+      "iconOverride": null,
+      "settings": {},
+      "settingsObj": false,
+      "class": "thermostat",
+      "virtualClass": null,
+      "energy": null,
+      "energyObj": {
+        "W": null,
+        "batteries": ["CR2032"],
+        "cumulative": null,
+        "homeBattery": null,
+        "electricCar": null,
+        "evCharger": null,
+        "generator": null
+      },
+      "capabilities": ["target_temperature", "measure_temperature", "thermostat_mode"],
+      "capabilitiesObj": {
+        "target_temperature": {
+          "value": 15,
+          "lastUpdated": "2026-08-13T08:01:00.856Z",
+          "type": "number",
+          "getable": true,
+          "setable": true,
+          "title": "Target temperature",
+          "titleShort": null,
+          "desc": null,
+          "units": "°C",
+          "decimals": 1,
+          "min": 5,
+          "max": 25,
+          "step": 0.5,
+          "chartType": "stepLine",
+          "id": "target_temperature",
+          "options": { "min": 5, "max": 25, "step": 0.5, "decimals": 1, "duration": true }
+        },
+        "measure_temperature": {
+          "value": 19.4,
+          "lastUpdated": "2026-08-13T08:01:00.856Z",
+          "type": "number",
+          "getable": true,
+          "setable": false,
+          "title": "Temperature",
+          "titleShort": null,
+          "desc": null,
+          "units": "°C",
+          "decimals": 2,
+          "chartType": "stepLine",
+          "id": "measure_temperature",
+          "options": {}
+        },
+        "thermostat_mode": {
+          "value": "auto",
+          "lastUpdated": "2026-08-13T08:01:00.856Z",
+          "type": "enum",
+          "getable": true,
+          "setable": true,
+          "title": "Mode",
+          "titleShort": null,
+          "desc": null,
+          "units": null,
+          "values": [
+            { "id": "auto", "title": "Automatic" },
+            { "id": "heat", "title": "Heating" },
+            { "id": "off", "title": "Off" }
+          ],
+          "id": "thermostat_mode",
+          "options": {}
+        }
+      },
+      "flags": [],
+      "ui": { "quickActionOverride": null, "components": [], "componentsStartAt": 0 },
+      "uiIndicator": null,
+      "ready": true,
+      "available": true,
+      "repair": false,
+      "unpair": false,
+      "unavailableMessage": null,
+      "images": [],
+      "insights": [
+        {
+          "uri": "homey:device:aaaaaaaa-0002-4000-8000-000000000002",
+          "id": "measure_temperature",
+          "type": "number",
+          "title": "Temperature",
+          "titleTrue": null,
+          "titleFalse": null,
+          "units": "°C",
+          "decimals": 2
+        },
+        {
+          "uri": "homey:device:aaaaaaaa-0002-4000-8000-000000000002",
+          "id": "target_temperature",
+          "type": "number",
+          "title": "Target temperature",
+          "titleTrue": null,
+          "titleFalse": null,
+          "units": "°C",
+          "decimals": 1
+        }
+      ],
+      "note": null,
+      "data": {}
+    },
+
+    "aaaaaaaa-0003-4000-8000-000000000003": {
+      "id": "aaaaaaaa-0003-4000-8000-000000000003",
+      "name": "Meter cupboard plug",
+      "driverUri": "homey:app:com.example.energy",
+      "driverId": "p1",
+      "zone": "22222222-2222-4222-8222-222222222222",
+      "zoneName": "Living room",
+      "icon": null,
+      "iconObj": null,
+      "iconOverride": null,
+      "settings": {
+        "host": "storage.example.invalid",
+        "port": 5000,
+        "user": "admin",
+        "passwd": "fake-value",
+        "encrypted_password": true,
+        "update_interval": 120
+      },
+      "settingsObj": false,
+      "class": "other",
+      "virtualClass": "socket",
+      "energy": null,
+      "energyObj": {
+        "W": -134,
+        "batteries": null,
+        "cumulative": true,
+        "homeBattery": null,
+        "electricCar": null,
+        "evCharger": null,
+        "generator": null
+      },
+      "capabilities": ["measure_power", "meter_power.consumed", "meter_power.returned"],
+      "capabilitiesObj": {
+        "measure_power": {
+          "value": -134,
+          "lastUpdated": "2026-08-13T06:00:00.085Z",
+          "type": "number",
+          "getable": true,
+          "setable": false,
+          "title": "Power",
+          "titleShort": null,
+          "desc": "Power in watt (W)",
+          "units": "W",
+          "decimals": 2,
+          "chartType": "stepLine",
+          "id": "measure_power",
+          "options": { "approximated": true }
+        },
+        "meter_power.consumed": {
+          "value": 12345.678,
+          "lastUpdated": "2026-08-13T06:00:00.085Z",
+          "type": "number",
+          "getable": true,
+          "setable": false,
+          "title": "Energy consumed",
+          "titleShort": null,
+          "desc": null,
+          "units": "kWh",
+          "decimals": 3,
+          "chartType": "stepLine",
+          "id": "meter_power.consumed",
+          "options": {}
+        },
+        "meter_power.returned": {
+          "value": 987.654,
+          "lastUpdated": "2026-08-13T06:00:00.085Z",
+          "type": "number",
+          "getable": true,
+          "setable": false,
+          "title": "Energy returned",
+          "titleShort": null,
+          "desc": null,
+          "units": "kWh",
+          "decimals": 3,
+          "chartType": "stepLine",
+          "id": "meter_power.returned",
+          "options": {}
+        }
+      },
+      "flags": [],
+      "ui": { "quickActionOverride": null, "components": [], "componentsStartAt": 0 },
+      "uiIndicator": null,
+      "ready": true,
+      "available": true,
+      "repair": false,
+      "unpair": false,
+      "unavailableMessage": null,
+      "images": [],
+      "insights": [
+        {
+          "uri": "homey:device:aaaaaaaa-0003-4000-8000-000000000003",
+          "id": "measure_power",
+          "type": "number",
+          "title": "Power",
+          "titleTrue": null,
+          "titleFalse": null,
+          "units": "W",
+          "decimals": 2
+        }
+      ],
+      "note": null,
+      "data": {}
+    },
+
+    "aaaaaaaa-0004-4000-8000-000000000004": {
+      "id": "aaaaaaaa-0004-4000-8000-000000000004",
+      "name": "Attic door sensor",
+      "driverUri": "homey:app:com.example.sensors",
+      "driverId": "contact",
+      "zone": "55555555-5555-4555-8555-555555555555",
+      "zoneName": "Attic",
+      "icon": null,
+      "iconObj": null,
+      "iconOverride": null,
+      "settings": {},
+      "settingsObj": false,
+      "class": "sensor",
+      "virtualClass": null,
+      "energy": null,
+      "energyObj": {
+        "W": null,
+        "batteries": ["CR2032"],
+        "cumulative": null,
+        "homeBattery": null,
+        "electricCar": null,
+        "evCharger": null,
+        "generator": null
+      },
+      "capabilities": ["alarm_contact", "measure_battery"],
+      "capabilitiesObj": {
+        "alarm_contact": {
+          "value": false,
+          "lastUpdated": "2026-08-10T11:22:33.444Z",
+          "type": "boolean",
+          "getable": true,
+          "setable": false,
+          "title": "Contact alarm",
+          "titleShort": null,
+          "desc": null,
+          "units": null,
+          "titleTrue": "Open",
+          "titleFalse": "Closed",
+          "id": "alarm_contact",
+          "options": {}
+        },
+        "measure_battery": {
+          "value": 12,
+          "lastUpdated": "2026-08-10T11:22:33.444Z",
+          "type": "number",
+          "getable": true,
+          "setable": false,
+          "title": "Battery",
+          "titleShort": null,
+          "desc": null,
+          "units": "%",
+          "decimals": 0,
+          "min": 0,
+          "max": 100,
+          "chartType": "stepLine",
+          "id": "measure_battery",
+          "options": {}
+        }
+      },
+      "flags": [],
+      "ui": { "quickActionOverride": null, "components": [], "componentsStartAt": 0 },
+      "uiIndicator": null,
+      "ready": false,
+      "available": false,
+      "repair": false,
+      "unpair": false,
+      "unavailableMessage": "Battery is empty",
+      "images": [],
+      "insights": [
+        {
+          "uri": "homey:device:aaaaaaaa-0004-4000-8000-000000000004",
+          "id": "alarm_contact",
+          "type": "boolean",
+          "title": "Contact alarm",
+          "titleTrue": "Open",
+          "titleFalse": "Closed",
+          "units": null,
+          "decimals": null
+        }
+      ],
+      "note": null,
+      "data": {}
+    },
+
+    "aaaaaaaa-0005-4000-8000-000000000005": {
+      "id": "aaaaaaaa-0005-4000-8000-000000000005",
+      "name": "Nook speaker",
+      "driverUri": "homey:app:com.example.audio",
+      "driverId": "speaker",
+      "zone": "33333333-3333-4333-8333-333333333333",
+      "zoneName": "Reading nook",
+      "icon": null,
+      "iconObj": null,
+      "iconOverride": null,
+      "settings": {},
+      "settingsObj": false,
+      "class": "speaker",
+      "virtualClass": null,
+      "energy": null,
+      "energyObj": {
+        "W": 3.1,
+        "batteries": null,
+        "cumulative": null,
+        "homeBattery": null,
+        "electricCar": null,
+        "evCharger": null,
+        "generator": null
+      },
+      "capabilities": ["speaker_playing", "volume_set"],
+      "capabilitiesObj": {
+        "speaker_playing": {
+          "value": false,
+          "lastUpdated": "2026-08-13T07:00:00.000Z",
+          "type": "boolean",
+          "getable": true,
+          "setable": true,
+          "title": "Playing",
+          "titleShort": null,
+          "desc": null,
+          "units": null,
+          "id": "speaker_playing",
+          "options": {}
+        },
+        "volume_set": {
+          "value": 0.2,
+          "lastUpdated": "2026-08-13T07:00:00.000Z",
+          "type": "number",
+          "getable": true,
+          "setable": true,
+          "title": "Volume",
+          "titleShort": null,
+          "desc": null,
+          "units": "%",
+          "decimals": 2,
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "chartType": "stepLine",
+          "id": "volume_set",
+          "options": {}
+        }
+      },
+      "flags": [],
+      "ui": { "quickActionOverride": null, "components": [], "componentsStartAt": 0 },
+      "uiIndicator": null,
+      "ready": true,
+      "available": true,
+      "repair": false,
+      "unpair": false,
+      "unavailableMessage": null,
+      "images": [],
+      "insights": [],
+      "note": null,
+      "data": {}
+    }
+  },
+
+  "flows": {
+    "bbbbbbbb-0001-4000-8000-000000000001": {
+      "id": "bbbbbbbb-0001-4000-8000-000000000001",
+      "name": "Evening lights",
+      "enabled": true,
+      "folder": "cccccccc-0001-4000-8000-000000000001",
+      "order": 1,
+      "trigger": { "uri": "homey:manager:cron", "id": "sunset", "args": {} },
+      "conditions": [],
+      "actions": [
+        {
+          "uri": "homey:device:aaaaaaaa-0001-4000-8000-000000000001",
+          "id": "onoff",
+          "args": {},
+          "group": "then",
+          "delay": null,
+          "duration": null
+        }
+      ],
+      "broken": false,
+      "triggerable": true,
+      "triggerCount": 412
+    },
+    "bbbbbbbb-0002-4000-8000-000000000002": {
+      "id": "bbbbbbbb-0002-4000-8000-000000000002",
+      "name": "Holiday mode",
+      "enabled": false,
+      "folder": null,
+      "order": 2,
+      "trigger": { "uri": "homey:manager:flow", "id": "programmatic_trigger", "args": {} },
+      "conditions": [],
+      "actions": [],
+      "broken": false,
+      "triggerable": true,
+      "triggerCount": 0
+    },
+    "bbbbbbbb-0003-4000-8000-000000000003": {
+      "id": "bbbbbbbb-0003-4000-8000-000000000003",
+      "name": "Broken doorbell",
+      "enabled": true,
+      "folder": null,
+      "order": 3,
+      "trigger": { "uri": "homey:device:removed-device", "id": "pressed", "args": {} },
+      "conditions": [],
+      "actions": [],
+      "broken": true,
+      "triggerable": false,
+      "triggerCount": 7
+    }
+  },
+
+  "advancedFlows": {
+    "bbbbbbbb-0004-4000-8000-000000000004": {
+      "id": "bbbbbbbb-0004-4000-8000-000000000004",
+      "name": "Morning routine",
+      "enabled": true,
+      "broken": false,
+      "triggerable": true,
+      "folder": "cccccccc-0001-4000-8000-000000000001",
+      "cards": {
+        "dddddddd-0001-4000-8000-000000000001": {
+          "ownerUri": "homey:manager:flow",
+          "id": "programmatic_trigger",
+          "type": "trigger",
+          "x": 40,
+          "y": 200,
+          "outputSuccess": []
+        }
+      }
+    }
+  },
+
+  "flowFolders": {
+    "cccccccc-0001-4000-8000-000000000001": {
+      "id": "cccccccc-0001-4000-8000-000000000001",
+      "name": "Lighting",
+      "parent": null
+    }
+  },
+
+  "logicVariables": {
+    "eeeeeeee-0001-4000-8000-000000000001": {
+      "id": "eeeeeeee-0001-4000-8000-000000000001",
+      "name": "Guest mode",
+      "type": "boolean",
+      "value": false
+    },
+    "eeeeeeee-0002-4000-8000-000000000002": {
+      "id": "eeeeeeee-0002-4000-8000-000000000002",
+      "name": "Comfort temperature",
+      "type": "number",
+      "value": 20.5
+    },
+    "eeeeeeee-0003-4000-8000-000000000003": {
+      "id": "eeeeeeee-0003-4000-8000-000000000003",
+      "name": "Last message",
+      "type": "string",
+      "value": "nothing yet"
+    }
+  },
+
+  "apps": {
+    "com.example.lights": {
+      "id": "com.example.lights",
+      "sdk": 3,
+      "origin": "appstore",
+      "enabled": true,
+      "autoupdate": true,
+      "channel": "stable",
+      "icon": "/assets/icon.svg",
+      "iconObj": { "id": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a", "url": "/icon/1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a/icon.svg" },
+      "version": "2.1.0",
+      "compatibility": ">=5.0.0",
+      "name": "Example Lights",
+      "author": { "name": "An Author", "email": "an.author@example.invalid" },
+      "permissions": ["homey:manager:speech-output"],
+      "images": { "large": "./assets/images/large.jpg", "small": "./assets/images/small.jpg" },
+      "settings": true,
+      "brandColor": "#1BCACA",
+      "hasDrivers": true,
+      "ready": true,
+      "state": "running",
+      "crashed": false,
+      "crashedMessage": null,
+      "exitCode": null,
+      "exitSignal": null,
+      "exitCount": 0,
+      "usage": { "cpu": 0.0006, "mem": 23484416 },
+      "updateAvailable": null
+    },
+    "com.example.heating": {
+      "id": "com.example.heating",
+      "sdk": 3,
+      "origin": "appstore",
+      "enabled": true,
+      "autoupdate": false,
+      "channel": "stable",
+      "version": "1.4.2",
+      "name": "Example Heating",
+      "author": { "name": "Another Author", "email": "another.author@example.invalid" },
+      "permissions": [],
+      "images": {},
+      "settings": false,
+      "hasDrivers": true,
+      "ready": true,
+      "state": "running",
+      "crashed": false,
+      "crashedMessage": null,
+      "exitCode": null,
+      "exitSignal": null,
+      "exitCount": 0,
+      "usage": { "cpu": 0.0002, "mem": 18874368 },
+      "updateAvailable": "1.5.0"
+    },
+    "com.example.audio": {
+      "id": "com.example.audio",
+      "sdk": 2,
+      "origin": "appstore",
+      "enabled": true,
+      "autoupdate": true,
+      "channel": "stable",
+      "version": "0.9.1",
+      "name": "Example Audio",
+      "author": { "name": "A Third Author", "email": "third.author@example.invalid" },
+      "permissions": [],
+      "images": {},
+      "settings": false,
+      "hasDrivers": true,
+      "ready": false,
+      "state": "stopped",
+      "crashed": true,
+      "crashedMessage": "Cannot read property 'volume' of undefined",
+      "exitCode": 1,
+      "exitSignal": null,
+      "exitCount": 3,
+      "usage": { "cpu": 0, "mem": 0 },
+      "updateAvailable": null
+    }
+  },
+
+  "users": {
+    "ffffffff-0001-4000-8000-000000000001": {
+      "id": "ffffffff-0001-4000-8000-000000000001",
+      "name": "Owner",
+      "athomId": "not-for-a-model",
+      "properties": { "note": "may carry contact details" },
+      "enabled": true,
+      "verified": true,
+      "role": "manager",
+      "present": true,
+      "asleep": false
+    },
+    "ffffffff-0002-4000-8000-000000000002": {
+      "id": "ffffffff-0002-4000-8000-000000000002",
+      "name": "Housemate",
+      "athomId": "not-for-a-model",
+      "properties": {},
+      "enabled": true,
+      "verified": true,
+      "role": "user",
+      "present": false,
+      "asleep": false
+    }
+  },
+
+  "systemInfo": {
+    "homeyVersion": "13.2.4",
+    "homeyModelId": "homey4d",
+    "homeyModelName": "Homey Pro (Early 2019)",
+    "timezone": "Europe/Amsterdam",
+    "cloudId": null,
+    "totalmem": 1044193280,
+    "freememMachine": 41766912,
+    "uptime": 1749993,
+    "nodeVersion": "v12.22.11"
+  }
+}

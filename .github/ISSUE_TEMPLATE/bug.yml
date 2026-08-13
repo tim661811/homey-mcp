@@ -1,0 +1,58 @@
+name: Bug report
+description: Something does not work on hardware the maintainer can test
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please read the hardware note below. It is not a brush-off,
+        it is about what can honestly be fixed.
+
+        The maintainer owns exactly one Homey: a **Homey Pro (Early 2019)**. A bug
+        that only happens on other hardware cannot be reproduced, cannot be
+        verified after a fix, and cannot be kept working afterwards. So for other
+        generations, please open a **Hardware compatibility report** instead, or
+        send a pull request with evidence that it works.
+
+  - type: input
+    id: doctor
+    attributes:
+      label: Output of `npx homey-mcp doctor --report`
+      description: >
+        This produces a scrubbed report: hardware model, API dialect, firmware,
+        which capability probes passed, and which endpoints are missing. It
+        contains no device names, no addresses and no credentials. Paste it here.
+      placeholder: paste the report
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: Include the exact error text. Run with `HOMEY_MCP_LOG_LEVEL=debug` for more.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Which tool was called, with which arguments.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Before you submit
+      options:
+        - label: I have checked that what I pasted contains no LAN addresses, tokens or the names of people in my home.
+          required: true

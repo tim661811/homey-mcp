@@ -1,0 +1,37 @@
+# Dependencies and build output
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Credentials. The server stores its session and refresh tokens under the user's
+# config directory, never in the repo, but keep a hard guard here anyway.
+.env
+.env.*
+credentials.json
+*.token
+.homey-mcp/
+
+# Anything captured from a real Homey stays on the machine that captured it.
+#
+# raw/   verbatim captures: device names, LAN addresses, cloud ids, the names of
+#        the people living there.
+# local/ pseudonymised captures. Safer, but still publishes the shape of a real
+#        household: how many rooms, which apps, which kinds of device. That is
+#        nobody else's business either, so it does not get committed.
+#
+# The fixtures that DO ship are hand-built from measured behaviour and contain no
+# household data at all. See CONTRIBUTING.md.
+tests/fixtures/raw/
+tests/fixtures/local/
+scratch/
+*.local.json
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Logs
+*.log
+npm-debug.log*

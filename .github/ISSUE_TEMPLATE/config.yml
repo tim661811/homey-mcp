@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or idea
+    url: https://github.com/tim661811/homey-mcp/discussions
+    about: For anything that is not a defect. Discussions suit open questions better than issues.
+  - name: Security issue
+    url: https://github.com/tim661811/homey-mcp/security/advisories/new
+    about: Report privately, not in a public issue. See SECURITY.md.

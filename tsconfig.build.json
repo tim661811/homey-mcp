@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Only the build has a layout to keep. It lives here rather than in the base
+    // config because the typecheck spans `tests/` too, and a rootDir of `src`
+    // rejects every file under it.
+    "rootDir": "src"
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["tests", "**/*.test.ts"]
+}

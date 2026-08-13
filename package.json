@@ -1,0 +1,59 @@
+{
+  "name": "homey-mcp",
+  "version": "0.1.0",
+  "description": "Model Context Protocol server for Homey Pro: read your home, query sensor history, and build real Flows from a plain-language wish.",
+  "keywords": [
+    "homey",
+    "homey-pro",
+    "mcp",
+    "model-context-protocol",
+    "home-automation",
+    "smart-home",
+    "athom"
+  ],
+  "license": "MIT",
+  "author": "Tim van de Ven (https://github.com/tim661811)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tim661811/homey-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tim661811/homey-mcp/issues"
+  },
+  "homepage": "https://github.com/tim661811/homey-mcp#readme",
+  "type": "module",
+  "bin": {
+    "homey-mcp": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "prepare": "node scripts/install-hooks.mjs",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "build": "tsc -p tsconfig.build.json",
+    "postbuild": "node scripts/make-bin-executable.mjs",
+    "dev": "tsc -p tsconfig.build.json --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "inspect": "npx @modelcontextprotocol/inspector node dist/index.js",
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "homey-api": "3.19.2",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.3.0",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  }
+}

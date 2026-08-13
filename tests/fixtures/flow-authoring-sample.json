@@ -1,0 +1,387 @@
+{
+  "_note": "Hand-built stand-in for the flow half of a Homey Pro (Early 2019), carrying no household data. Every shape was copied from a real capture. Card lists arrive from the hub as ARRAYS while flows arrive as object maps keyed by id, which is why the two differ here. Device and zone ids match tests/fixtures/home-sample.json so the two fixtures can be used together.",
+  "_quirks": {
+    "cards.uri+id": "on this firmware a card descriptor carries an owner `uri` and a SHORT `id`; the canonical form used everywhere inside this server joins them with a colon.",
+    "cards.uriObj": "owner metadata lives in `uriObj`, which the newer firmware replaces with flat ownerUri/ownerId/ownerName fields.",
+    "cards.args": "the API specification types this as an object; every real hub answers with an array.",
+    "cards.droptoken": "a boolean on this firmware (does the card take a dropped value at all) and an array of accepted type names on the newer one. Both have to be read.",
+    "cards.duration": "a boolean on an action card, saying whether the card supports a 'for X' duration.",
+    "cards.deprecated": "still functional, still returned, hidden in the editor.",
+    "cards.values": "a dropdown carries {id, title} pairs and only the id may be sent.",
+    "cards.autocomplete": "an autocomplete argument is resolved through the hub and stores the WHOLE returned object, including app-specific fields such as host and description.",
+    "flow.conditions.group": "group1..group3, ANDed inside a group and ORed between groups. Omitting it saves fine and then breaks the web editor's renderer.",
+    "flow.conditions.inverted": "the 'is NOT' toggle.",
+    "flow.actions.group": "then or else.",
+    "flow.actions.delay/duration": "an object {number: string, multiplier: 1|60}, never a bare number. multiplier 1 counts seconds, 60 counts minutes.",
+    "flow.broken/triggerable/triggerCount": "firmware-computed and read-only; sending them back is never correct.",
+    "flow.token.pipe": "a global token is written [[ownerUri|tokenId]] with a pipe. A colon there saves without an error and shows as 'Unavailable' in the app.",
+    "advancedFlow.cards.key": "the map key is the node id and must be a version 4 UUID. Anything else is rejected as 'should NOT have additional properties'.",
+    "advancedFlow.cards.delay": "a delay is its own node whose wait sits inside args, unlike a standard flow's action where delay is a sibling of args.",
+    "advancedFlow.cards.all.input": "an 'all' join is the only place an edge is written twice: on the source node's output array AND in the join's own input array as <sourceKey>::<port>.",
+    "advancedFlow.token.node": "a value from an upstream card is written [[trigger::<node uuid>::<tokenId>]], a different dialect from the standard flow's [[owner|token]].",
+    "cards.idCollision": "a card id is unique only WITHIN a kind. homey:manager:flow:programmatic_trigger is the trigger 'This Flow is started' AND the action 'Start a Flow', both present on the measured hub. An index keyed by id alone holds whichever was read last, so the safest trigger on the hub resolves to an action."
+  },
+  "flowCardTriggers": [
+    {
+      "uri": "homey:manager:flow",
+      "uriObj": {
+        "type": "manager",
+        "id": "flow",
+        "name": "Flow"
+      },
+      "id": "programmatic_trigger",
+      "title": "This Flow is started",
+      "titleFormatted": null,
+      "hint": "Never fires on its own, so it is always safe to build on."
+    },
+    {
+      "uri": "homey:manager:cron",
+      "uriObj": {
+        "type": "manager",
+        "id": "cron",
+        "name": "Date & Time"
+      },
+      "id": "time_exactly",
+      "title": "The time is",
+      "titleFormatted": "The time is [[time]]",
+      "hint": null,
+      "args": [
+        {
+          "name": "time",
+          "type": "time",
+          "placeholder": "22:00"
+        }
+      ],
+      "tokens": [
+        {
+          "id": "time",
+          "type": "string",
+          "title": "time",
+          "hint": null,
+          "example": "09:00"
+        }
+      ]
+    },
+    {
+      "uri": "homey:device:aaaaaaaa-0004-4000-8000-000000000004",
+      "uriObj": {
+        "type": "device",
+        "id": "aaaaaaaa-0004-4000-8000-000000000004",
+        "name": "Attic door sensor"
+      },
+      "id": "alarm_contact_true",
+      "title": "The contact alarm turned on",
+      "titleFormatted": null,
+      "hint": null
+    },
+    {
+      "uri": "homey:device:aaaaaaaa-0001-4000-8000-000000000001",
+      "uriObj": {
+        "type": "device",
+        "id": "aaaaaaaa-0001-4000-8000-000000000001",
+        "name": "Reading lamp"
+      },
+      "id": "onoff_true",
+      "title": "Turned on",
+      "titleFormatted": null,
+      "hint": null,
+      "deprecated": true
+    }
+  ],
+  "flowCardConditions": [
+    {
+      "uri": "homey:manager:presence",
+      "uriObj": {
+        "type": "manager",
+        "id": "presence",
+        "name": "Presence"
+      },
+      "id": "noone_athome",
+      "title": "Nobody is at home",
+      "titleFormatted": null,
+      "hint": null
+    },
+    {
+      "uri": "homey:manager:logic",
+      "uriObj": {
+        "type": "manager",
+        "id": "logic",
+        "name": "Logic"
+      },
+      "id": "lt",
+      "title": "A number is less than",
+      "titleFormatted": "[[droptoken]] is less than [[value]]",
+      "hint": null,
+      "droptoken": true,
+      "args": [
+        {
+          "name": "value",
+          "type": "number",
+          "min": 0,
+          "max": 100
+        }
+      ]
+    }
+  ],
+  "flowCardActions": [
+    {
+      "uri": "homey:manager:flow",
+      "uriObj": {
+        "type": "manager",
+        "id": "flow",
+        "name": "Flow"
+      },
+      "id": "programmatic_trigger",
+      "title": "Start a Flow",
+      "titleFormatted": "Start [[flow]]",
+      "hint": "Starts another flow that begins with a 'This Flow is started' card.",
+      "args": [
+        {
+          "name": "flow",
+          "type": "autocomplete",
+          "title": "Flow"
+        }
+      ]
+    },
+    {
+      "uri": "homey:manager:notifications",
+      "uriObj": {
+        "type": "manager",
+        "id": "notifications",
+        "name": "Notifications"
+      },
+      "id": "create_notification",
+      "title": "Write a notification",
+      "titleFormatted": "Write [[text]] to the timeline",
+      "hint": null,
+      "args": [
+        {
+          "name": "text",
+          "type": "text",
+          "placeholder": "Your message"
+        }
+      ]
+    },
+    {
+      "uri": "homey:device:aaaaaaaa-0001-4000-8000-000000000001",
+      "uriObj": {
+        "type": "device",
+        "id": "aaaaaaaa-0001-4000-8000-000000000001",
+        "name": "Reading lamp"
+      },
+      "id": "onoff",
+      "title": "Turn on or off",
+      "titleFormatted": "Turn [[onoff]]",
+      "hint": null,
+      "duration": true,
+      "args": [
+        {
+          "name": "onoff",
+          "type": "dropdown",
+          "values": [
+            {
+              "id": "true",
+              "title": "On"
+            },
+            {
+              "id": "false",
+              "title": "Off"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "uri": "homey:device:aaaaaaaa-0002-4000-8000-000000000002",
+      "uriObj": {
+        "type": "device",
+        "id": "aaaaaaaa-0002-4000-8000-000000000002",
+        "name": "Bedroom radiator"
+      },
+      "id": "target_temperature_set",
+      "title": "Set the target temperature",
+      "titleFormatted": "Set the target temperature to [[target_temperature]]",
+      "hint": null,
+      "args": [
+        {
+          "name": "target_temperature",
+          "type": "number",
+          "min": 4,
+          "max": 35,
+          "step": 0.5
+        }
+      ]
+    },
+    {
+      "uri": "homey:app:com.example.cast",
+      "uriObj": {
+        "type": "app",
+        "id": "com.example.cast",
+        "name": "Cast"
+      },
+      "id": "tts",
+      "title": "Say something",
+      "titleFormatted": "Say [[text]] on [[device]]",
+      "hint": null,
+      "args": [
+        {
+          "name": "device",
+          "type": "autocomplete"
+        },
+        {
+          "name": "text",
+          "type": "text"
+        }
+      ]
+    }
+  ],
+  "autocompleteResults": [
+    {
+      "id": "cast-nook",
+      "name": "Nook speaker",
+      "description": "Cast device",
+      "host": "nook.example.invalid",
+      "model": "Example Cast"
+    },
+    {
+      "id": "cast-attic",
+      "name": "Attic speaker",
+      "description": "Cast device",
+      "host": "attic.example.invalid",
+      "model": "Example Cast"
+    }
+  ],
+  "standardFlowWire": {
+    "id": "bbbbbbbb-0009-4000-8000-000000000009",
+    "name": "Warn when the attic door opens",
+    "enabled": true,
+    "folder": null,
+    "order": 12,
+    "trigger": {
+      "uri": "homey:device:aaaaaaaa-0004-4000-8000-000000000004",
+      "id": "alarm_contact_true",
+      "args": {}
+    },
+    "conditions": [
+      {
+        "uri": "homey:manager:presence",
+        "id": "noone_athome",
+        "args": {},
+        "group": "group1",
+        "inverted": true
+      }
+    ],
+    "actions": [
+      {
+        "uri": "homey:manager:notifications",
+        "id": "create_notification",
+        "args": {
+          "text": "The attic door opened at [[homey:manager:cron|time]]"
+        },
+        "group": "then",
+        "delay": null,
+        "duration": null
+      },
+      {
+        "uri": "homey:device:aaaaaaaa-0001-4000-8000-000000000001",
+        "id": "onoff",
+        "args": {
+          "onoff": "true"
+        },
+        "group": "then",
+        "delay": {
+          "number": "2",
+          "multiplier": 60
+        },
+        "duration": {
+          "number": "45",
+          "multiplier": 1
+        }
+      }
+    ],
+    "broken": false,
+    "triggerable": true,
+    "triggerCount": 7777
+  },
+  "advancedFlowWire": {
+    "id": "bbbbbbbb-0010-4000-8000-000000000010",
+    "name": "Attic door routine",
+    "enabled": true,
+    "broken": false,
+    "triggerable": true,
+    "folder": null,
+    "cards": {
+      "dddddddd-0011-4000-8000-000000000011": {
+        "ownerUri": "homey:manager:cron",
+        "id": "time_exactly",
+        "args": {
+          "time": "22:00"
+        },
+        "type": "trigger",
+        "x": 40,
+        "y": 200,
+        "outputSuccess": [
+          "dddddddd-0013-4000-8000-000000000013",
+          "dddddddd-0014-4000-8000-000000000014"
+        ]
+      },
+      "dddddddd-0012-4000-8000-000000000012": {
+        "ownerUri": "homey:device:aaaaaaaa-0004-4000-8000-000000000004",
+        "id": "alarm_contact_true",
+        "type": "trigger",
+        "x": 40,
+        "y": 300,
+        "outputSuccess": [
+          "dddddddd-0013-4000-8000-000000000013"
+        ]
+      },
+      "dddddddd-0013-4000-8000-000000000013": {
+        "ownerUri": "homey:manager:presence",
+        "id": "noone_athome",
+        "type": "condition",
+        "x": 440,
+        "y": 200,
+        "inverted": true,
+        "outputTrue": [
+          "dddddddd-0015-4000-8000-000000000015"
+        ]
+      },
+      "dddddddd-0014-4000-8000-000000000014": {
+        "type": "delay",
+        "args": {
+          "delay": {
+            "number": "1",
+            "multiplier": 60
+          }
+        },
+        "x": 440,
+        "y": 300,
+        "outputSuccess": [
+          "dddddddd-0015-4000-8000-000000000015"
+        ]
+      },
+      "dddddddd-0015-4000-8000-000000000015": {
+        "type": "all",
+        "x": 840,
+        "y": 240,
+        "input": [
+          "dddddddd-0013-4000-8000-000000000013::outputTrue",
+          "dddddddd-0014-4000-8000-000000000014::outputSuccess"
+        ],
+        "outputSuccess": [
+          "dddddddd-0016-4000-8000-000000000016"
+        ]
+      },
+      "dddddddd-0016-4000-8000-000000000016": {
+        "ownerUri": "homey:manager:notifications",
+        "id": "create_notification",
+        "args": {
+          "text": "The attic door opened at [[trigger::dddddddd-0011-4000-8000-000000000011::time]]"
+        },
+        "type": "action",
+        "x": 1240,
+        "y": 240
+      }
+    }
+  }
+}

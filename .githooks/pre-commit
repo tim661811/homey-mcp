@@ -1,0 +1,15 @@
+#!/bin/sh
+# Guards a public repository against committing credentials or household data.
+#
+# Activated by: git config core.hooksPath .githooks
+# (npm run hooks:install does this for you)
+
+set -e
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "pre-commit: node not found on PATH, skipping the secret scan." >&2
+  echo "pre-commit: install Node 24 or run 'node scripts/check-secrets.mjs --staged' by hand." >&2
+  exit 0
+fi
+
+node "$(git rev-parse --show-toplevel)/scripts/check-secrets.mjs" --staged

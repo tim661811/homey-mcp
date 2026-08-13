@@ -1,0 +1,60 @@
+name: Hardware compatibility report
+description: Tell us how it behaves on a Homey generation the maintainer does not own
+labels: ['compatibility']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the most useful thing you can send if you own a Homey Pro (Early
+        2023) or newer, or an Early 2016 or 2018.
+
+        The maintainer has one Homey Pro (Early 2019) and no way to test the
+        others. Every measured fact in this project came off that single hub. A
+        report like this turns "supported but untested" into something real,
+        without anyone having to buy hardware.
+
+        Reports are collected in `COMPATIBILITY.md` with credit.
+
+  - type: input
+    id: doctor
+    attributes:
+      label: Output of `npx homey-mcp doctor --report`
+      description: >
+        Scrubbed by design: hardware model, API dialect, firmware version, which
+        capability probes passed, which endpoints returned 404. No device names,
+        no addresses, no credentials.
+      placeholder: paste the report
+    validations:
+      required: true
+
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: Overall outcome
+      options:
+        - Everything I tried worked
+        - Reading worked, creating a Flow did not
+        - It could not connect at all
+        - Mixed, details below
+    validations:
+      required: true
+
+  - type: textarea
+    id: worked
+    attributes:
+      label: What worked
+      description: Which tools you exercised and what came back.
+
+  - type: textarea
+    id: failed
+    attributes:
+      label: What failed
+      description: Exact error text, and which tool produced it.
+
+  - type: checkboxes
+    id: followup
+    attributes:
+      label: Follow-up
+      options:
+        - label: I am willing to run a diagnostic patch against my hardware and report back.
+        - label: I am willing to open a pull request if we work out the fix together.
