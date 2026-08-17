@@ -25,10 +25,10 @@ import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js'
 
 import { createAskFunction, isElicitationSupported } from './ask.js'
 import type { ServerContext } from './context.js'
-import { buildServerInstructions } from './instructions.js'
+import { buildServerInstructions, buildUnauthenticatedInstructions } from './instructions.js'
 import type { HomeCache } from '../homey/cache.js'
 import { createHomeCache } from '../homey/cache.js'
-import { detectCapabilities } from '../homey/registry.js'
+import { detectCapabilities, unprobedCapabilities } from '../homey/registry.js'
 import { shouldOfferCapability } from '../homey/types.js'
 import type { CapabilityRegistry, HomeyConnection } from '../homey/types.js'
 import type { Logger } from '../util/log.js'
@@ -91,6 +91,12 @@ export interface CreateServerOptions {
   askTimeoutMs?: number
   /** The version reported in the MCP handshake. Read from package.json when omitted. */
   version?: string
+  /**
+   * Why there is no session, when the connection was started without one. Shown
+   * to the model in the instructions so its first message can say what actually
+   * went wrong rather than "something needs authentication".
+   */
+  unauthenticatedReason?: string
 }
 
 export interface CreatedServer {
@@ -105,8 +111,18 @@ export async function createServer(options: CreateServerOptions): Promise<Create
   const logger = (options.logger ?? defaultLogger).child('server')
   const connection = options.connection
 
+  // A server may be running without a session on purpose, so that the MCP
+  // handshake still succeeds and the client can say "needs authentication"
+  // instead of showing a process that died. Nothing about the hub can be read in
+  // that state, including its identity, so everything below has to branch here
+  // rather than assume there is a Homey on the other end.
+  const authenticated = connection.authenticated !== false
+
   const capabilities =
-    options.capabilities ?? (await detectCapabilities(connection, { logger: logger.child('capabilities') }))
+    options.capabilities ??
+    (authenticated
+      ? await detectCapabilities(connection, { logger: logger.child('capabilities') })
+      : unprobedCapabilities('Nothing was probed: this server is not signed in to a Homey yet.'))
 
   const cache = options.cache ?? createHomeCache(connection, { logger: logger.child('cache'), capabilities })
 
@@ -120,11 +136,13 @@ export async function createServer(options: CreateServerOptions): Promise<Create
       version: options.version ?? readPackageMetadata().version,
     },
     {
-      instructions: buildServerInstructions({
-        identity: connection.identity,
-        dialect: connection.dialect,
-        capabilities,
-      }),
+      instructions: authenticated
+        ? buildServerInstructions({
+            identity: connection.identity,
+            dialect: connection.dialect,
+            capabilities,
+          })
+        : buildUnauthenticatedInstructions(options.unauthenticatedReason),
     },
   )
 
@@ -152,8 +170,11 @@ export async function createServer(options: CreateServerOptions): Promise<Create
 
   logger.info('MCP server ready', {
     tools: registeredModules,
-    homey: connection.identity.modelName,
-    dialect: connection.dialect,
+    // Reading the identity is what throws when there is no session, so it is
+    // named only when there is one. A log line is not worth taking the server
+    // down for.
+    homey: authenticated ? connection.identity.modelName : 'not signed in yet',
+    dialect: authenticated ? connection.dialect : 'unknown',
   })
 
   return { server, context, capabilities, registeredModules }
@@ -187,7 +208,8 @@ async function registerToolModules(server: McpServer, context: ServerContext): P
     registered.push(name)
   }
 
-  const [overview, devices, flows, flowCards, insights, energy, weather, doctor] = await Promise.all([
+  const [authenticate, overview, devices, flows, flowCards, insights, energy, weather, doctor] = await Promise.all([
+    import('./tools/authenticate.js'),
     import('./tools/overview.js'),
     import('./tools/devices.js'),
     import('./tools/flows.js'),
@@ -197,6 +219,12 @@ async function registerToolModules(server: McpServer, context: ServerContext): P
     import('./tools/weather.js'),
     import('./tools/doctor.js'),
   ])
+
+  // First, deliberately. It is the only tool that works when the server has no
+  // session, which is exactly the state a model has to get out of before any of
+  // the others can do anything, and the order tools are listed in is the order a
+  // model reads them.
+  register('authenticate', authenticate.registerAuthenticateTools)
 
   register('overview', overview.registerOverviewTools)
   register('devices', devices.registerDevicesTools)

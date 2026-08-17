@@ -178,8 +178,14 @@ export async function connectToHomey(
 export const DEFAULT_SESSION_RETRY_INTERVAL_MS = 30_000
 
 export interface ReconnectingConnectionOptions {
-  /** The credentials the first connection is made with, already resolved. */
-  credentials: ResolvedCredentials
+  /**
+   * The credentials the first connection is made with, already resolved.
+   *
+   * Optional, because there may not be any: a server can start with nothing to
+   * sign in with and acquire a session later. `loadCredentials` is what is used
+   * from then on, and it is read again every time.
+   */
+  credentials?: ResolvedCredentials
   /**
    * Reads the credential source again. Called before every rebuild and its
    * answer is never cached, because the file on disk is routinely newer than
@@ -199,12 +205,36 @@ export interface ReconnectingConnectionOptions {
   retryIntervalMs?: number
   /** Injected by tests so the cooldown does not depend on the wall clock. */
   now?: () => number
+  /**
+   * Start even when no session can be established, and report that per call.
+   *
+   * What this is for: an MCP client that cannot complete a handshake shows the
+   * server as failed and says nothing about why. Exiting at startup therefore
+   * turned the most ordinary situation there is, a credential that expired
+   * overnight, into a red cross with no route out of it. Starting anyway lets
+   * the handshake succeed, so the client lists the tools, every call that needs
+   * the hub explains what to do, and `homey_authenticate` fixes it from inside
+   * the conversation.
+   */
+  startWithoutSession?: boolean
 }
 
 export interface ReconnectingConnection extends HomeyConnectionWithDiagnostics {
   /** 1 for the session the server started with, one more for every rebuild. */
   readonly sessionCount: number
-  /** Closes whichever session is current. */
+  /**
+   * False when the server is running without a Homey session. Reading `identity`,
+   * `dialect` or `diagnostics` throws in that state, so anything that reports on
+   * the hub has to check this first.
+   */
+  readonly authenticated: boolean
+  /**
+   * Signs in, or confirms an existing session, and answers with the hub's
+   * identity. What `homey_authenticate` calls. Throws an error naming both routes
+   * when it cannot.
+   */
+  authenticate(): Promise<HomeyIdentity>
+  /** Closes whichever session is current. Safe when there is none. */
   close(): Promise<void>
 }
 
@@ -249,8 +279,34 @@ export async function openReconnectingConnection(
   const queue = options.connectOptions?.queue ?? createRequestQueue({ logger })
   const connectOptions: ConnectToHomeyOptions = { ...options.connectOptions, logger, queue }
 
-  let current = await connect(options.credentials, connectOptions)
-  let sessionCount = 1
+  // Null means no session yet, which is a state this server can run in rather
+  // than a reason to refuse to start. See `startWithoutSession`.
+  let current: HomeyConnectionWithDiagnostics | null = null
+  let startupFailure: HomeyMcpError | null = null
+
+  const initialCredentials = options.credentials
+  if (initialCredentials === undefined) {
+    // Nothing to try with. Not a failure to report as one: it is the state of a
+    // machine that has never been set up, and the first tool call will read the
+    // credential source again in case that changed.
+    if (options.startWithoutSession !== true) {
+      throw new HomeyMcpError('not_connected', 'No credentials were supplied to open a Homey session with.')
+    }
+    logger.warn('Starting without any credentials, every tool will say so until this is signed in')
+  } else {
+    try {
+      current = await connect(initialCredentials, connectOptions)
+    } catch (error) {
+      if (options.startWithoutSession !== true) throw error
+      startupFailure = classifyError(error, { operation: 'connectToHomey' })
+      logger.warn('Starting without a Homey session, every tool will say so until this is signed in', {
+        reason: startupFailure.reason,
+      })
+    }
+  }
+  // Zero when the server started without one, so `doctor` and the logs can tell
+  // "never signed in" from "signed in once".
+  let sessionCount = current === null ? 0 : 1
 
   let rebuildInFlight: Promise<void> | null = null
   let lastAttemptAt = Number.NEGATIVE_INFINITY
@@ -265,8 +321,9 @@ export async function openReconnectingConnection(
     sessionCount += 1
     lastRebuildFailure = null
     // After the swap, so a slow teardown cannot delay the calls that are waiting
-    // for the new session, and a failing one cannot undo it.
-    await disconnectFromHomey(previous)
+    // for the new session, and a failing one cannot undo it. Null on the first
+    // sign-in of a server that started without a session: nothing to tear down.
+    if (previous !== null) await disconnectFromHomey(previous)
     logger.info('Signed in again after Homey refused the previous session', {
       session: sessionCount,
       route: next.diagnostics.route,
@@ -337,9 +394,39 @@ export async function openReconnectingConnection(
     }
   }
 
-  async function request<T>(operation: () => Promise<T>, label: string, idempotent = false): Promise<T> {
+  /**
+   * The current session, signing in first when there is none.
+   *
+   * A server that started without one reaches this on its first tool call, which
+   * is the right moment to try: by then the user may well have signed in since,
+   * and the alternative is refusing forever on the strength of one failure at
+   * startup. The cooldown inside `ensureFreshSession` keeps a hub that is off the
+   * network from being walked once per call.
+   */
+  async function requireSession(): Promise<HomeyConnectionWithDiagnostics> {
+    if (current !== null) return current
+
     try {
-      return await current.request(operation, label, idempotent)
+      await ensureFreshSession(
+        startupFailure ??
+          new HomeyMcpError('not_connected', 'This server has no Homey session yet.', { sessions: sessionCount }),
+      )
+    } catch (error) {
+      // The rebuild's own message says what the hub refused, which is the useful
+      // half for someone reading a log. It does not say what to DO, and this is
+      // the one path where the caller has never had a working session and needs
+      // exactly that. So the reason is kept and the instructions are added.
+      throw needsAuthenticationError(startupFailure, sessionCount, error)
+    }
+
+    if (current === null) throw needsAuthenticationError(startupFailure, sessionCount)
+    return current
+  }
+
+  async function request<T>(operation: () => Promise<T>, label: string, idempotent = false): Promise<T> {
+    const session = await requireSession()
+    try {
+      return await session.request(operation, label, idempotent)
     } catch (error) {
       const failure = classifyError(error, { operation: label })
       // `not_connected` is the only reason a new session can fix: the hub
@@ -362,31 +449,80 @@ export async function openReconnectingConnection(
       // A read, so repeating it changes nothing. It runs against the session
       // that has just replaced the dead one, because `operation` reaches the hub
       // through the live `api` view above.
-      return await current.request(operation, label, idempotent)
+      return await (await requireSession()).request(operation, label, idempotent)
     }
+  }
+
+  /** Whichever session is current, refusing rather than pretending when there is none. */
+  const established = (): HomeyConnectionWithDiagnostics => {
+    if (current === null) throw needsAuthenticationError(startupFailure, sessionCount)
+    return current
   }
 
   return {
     // A live view rather than the current session's object: see the note above.
-    api: createLiveApiView(() => current.api),
+    api: createLiveApiView(() => established().api),
     get dialect(): HomeyDialect {
-      return current.dialect
+      return established().dialect
     },
     get identity(): HomeyIdentity {
-      return current.identity
+      return established().identity
     },
     get diagnostics(): ConnectionDiagnostics {
-      return current.diagnostics
+      return established().diagnostics
     },
     get sessionCount(): number {
       return sessionCount
     },
+    get authenticated(): boolean {
+      return current !== null
+    },
+    authenticate: async (): Promise<HomeyIdentity> => {
+      const session = await requireSession()
+      return session.identity
+    },
     queue,
     request,
     close: async (): Promise<void> => {
-      await disconnectFromHomey(current)
+      if (current !== null) await disconnectFromHomey(current)
     },
   }
+}
+
+/**
+ * The failure a caller gets when there is no session and one could not be made.
+ *
+ * Worded for the person, not the model: it names both routes and says which one
+ * lasts. The reason stays `not_connected` rather than becoming a new taxonomy
+ * entry, because every consumer of that reason already treats it as "cannot
+ * reach the hub, and retrying the same call will not change that".
+ */
+function needsAuthenticationError(
+  startupFailure: HomeyMcpError | null,
+  sessionCount: number,
+  cause?: unknown,
+): HomeyMcpError {
+  const reported = cause instanceof HomeyMcpError ? cause : startupFailure
+  return new HomeyMcpError(
+    'not_connected',
+    [
+      'This server is not signed in to your Homey yet, so it cannot read or change anything.',
+      reported === null || reported === undefined ? '' : `The last attempt said: ${reported.message}`,
+      // Only what the reported message does not already say. It names both
+      // routes itself, and repeating them here made a wall of text a model has
+      // to wade through to find the one new instruction.
+      //
+      // And it says what the tool actually does: it reads the credential source
+      // again and signs in with whatever is there. It does not open a browser
+      // itself, and promising that would send someone to wait for a window that
+      // never appears.
+      'Once that is done, call "homey_authenticate" here. It picks up the new credential without restarting anything, and answers with the name of the Homey it reached.',
+    ]
+      .filter(Boolean)
+      .join(' '),
+    { needsAuthentication: true, sessions: sessionCount, ...(reported?.details ?? {}) },
+    { cause: cause ?? startupFailure ?? undefined },
+  )
 }
 
 /**

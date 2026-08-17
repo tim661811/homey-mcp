@@ -326,3 +326,21 @@ function statusCodeOf(error: HomeyMcpError): number | null {
   const candidate = error.details['statusCode']
   return typeof candidate === 'number' ? candidate : null
 }
+
+/**
+ * A registry for a server that has no session, so nothing could be probed.
+ *
+ * Every answer is null rather than false: nothing was established about this
+ * hardware, and `shouldOfferCapability` therefore keeps every tool registered.
+ * That is deliberate. A client that lists the tools before the user has signed
+ * in should show the same surface it will have afterwards, or the list changes
+ * under the user the moment they authenticate.
+ */
+export function unprobedCapabilities(reason: string): CapabilityRegistry {
+  return {
+    hardware: { advancedFlow: null, energyReports: null, moods: null, insights: null },
+    probedAt: new Date().toISOString(),
+    notes: [reason],
+    probes: {},
+  }
+}

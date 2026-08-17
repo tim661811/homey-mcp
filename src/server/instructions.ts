@@ -334,3 +334,28 @@ function describeAddressKind(identity: HomeyIdentity): string {
       return 'the network'
   }
 }
+
+/**
+ * What the model is told when the server is running without a Homey session.
+ *
+ * The server starts in this state on purpose rather than refusing to start, so
+ * the client shows it as connected and the tools are listed. That only helps if
+ * the model is told plainly what is true: nothing about the house is known yet,
+ * and there is exactly one thing worth doing first.
+ */
+export function buildUnauthenticatedInstructions(reason?: string): string {
+  return [
+    'You are connected to homey-mcp, but it is NOT signed in to a Homey yet, so it currently knows nothing about the house.',
+    reason === undefined ? '' : `The last attempt to sign in said: ${reason}`,
+    '',
+    'Every tool that needs the Homey will refuse with an explanation until this is fixed. Do not guess device names, rooms or flows in the meantime, and do not tell the user what their home contains: nothing has been read.',
+    '',
+    'To fix it, call "homey_authenticate". It opens a browser window on the machine running this server, where the user signs in to their Athom account. Tell them to expect that window.',
+    '',
+    'If that is not possible, for example because this server runs on a different machine than the user is sitting at, tell them to run "npx homey-mcp setup" in a terminal and choose the Personal Access Token route. That token does not expire, while a browser sign-in lasts 24 hours.',
+    '',
+    'Once signed in, everything else in this server works normally and the tools describe themselves.',
+  ]
+    .filter((line, index, all) => line !== '' || (index > 0 && all[index - 1] !== ''))
+    .join('\n')
+}

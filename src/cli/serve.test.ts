@@ -152,19 +152,36 @@ describe('runServe, on the arguments it is given', () => {
     // "--config" pointing at a path that is not there used to print the generic
     // "no credentials were found, run setup" help, which sends someone to redo a
     // setup they already did rather than at the typo in their client config.
-    const output = collectOutput()
+    //
+    // The server no longer EXITS on this: it starts unsigned-in so the client can
+    // say "needs authentication" instead of showing a dead process. The reason
+    // still has to name the file, which is what this asserts, and it now goes to
+    // the log because that is what an MCP client collects and shows.
+    const lines: string[] = []
+    const capturing = createLogger({
+      level: 'warn',
+      environment: {},
+      write: (line) => lines.push(line),
+    })
     const missingPath = join(tmpdir(), 'homey-mcp-does-not-exist', 'credentials.json')
 
-    const exitCode = await runServe({
+    // Resolved rather than awaited to completion: with no session the server now
+    // runs until its client hangs up, and this test is about what it said on the
+    // way up rather than about how it ends.
+    const run = runServe({
       argv: ['--config', missingPath],
-      logger,
+      logger: capturing,
       environment: {},
-      errorOutput: output.stream,
+      errorOutput: collectOutput().stream,
     })
 
-    expect(exitCode).toBe(1)
-    expect(output.written()).toContain(missingPath)
-    expect(output.written()).toContain('could not be read')
+    await vi.waitFor(() => {
+      expect(lines.join('\n')).toContain(missingPath)
+    })
+    expect(lines.join('\n')).toContain('could not be read')
+
+    process.stdin.emit('end')
+    await run
   })
 })
 

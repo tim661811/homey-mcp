@@ -69,6 +69,16 @@ export interface HomeyConnection {
   readonly api: unknown
   readonly dialect: HomeyDialect
   readonly identity: HomeyIdentity
+  /**
+   * False when this connection has no Homey session, which a server started
+   * without a usable credential deliberately allows so that the MCP handshake
+   * still succeeds. In that state `identity`, `dialect` and `diagnostics` THROW,
+   * so anything that reports on the hub must check this first.
+   *
+   * Optional, and absent means authenticated: every connection that predates
+   * this, including the fakes in the tests, is a live one.
+   */
+  readonly authenticated?: boolean
   readonly queue: RequestQueue
   /**
    * Runs one hub call through the shared queue and converts any failure into a

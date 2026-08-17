@@ -74,26 +74,41 @@ export async function runServe(options: ServeOptions = {}): Promise<number> {
       ...(configPath === null ? {} : { configPath }),
     })
 
+  // Missing or expired credentials used to end the process here. That is the
+  // wrong answer for a server a client starts: an MCP client cannot show a
+  // reason for a process that exited, so the most ordinary situation there is,
+  // a session that lapsed overnight, appeared as a red cross with nothing to act
+  // on. The server now starts anyway, the handshake succeeds, and every tool
+  // that needs the hub says what to do. `homey_authenticate` fixes it from
+  // inside the conversation.
+  let unauthenticatedReason: string | undefined
   const credentials = await loadCredentials().catch((error: unknown) => {
     const failure = classifyError(error, { operation: 'resolveCredentials' })
-    if (failure.reason === 'not_connected') {
-      // Not an error in the usual sense: either the server has never been set
-      // up, or the file it was pointed at is not there. The message already
-      // names which of the two it is and what to run, so it is printed as it
-      // stands. Substituting the generic "no credentials found" help here told
-      // someone who mistyped --config that they had never set the server up.
-      errorOutput.write(`\n${failure.message}\n\n`)
-      return null
-    }
-    throw failure
+    if (failure.reason !== 'not_connected') throw failure
+    // Still written to the log, because that is where someone looks when a tool
+    // has just told them to sign in.
+    logger.warn(failure.message)
+    unauthenticatedReason = failure.message
+    return undefined
   })
 
-  if (credentials === null) return 1
+  const connection = await openReconnectingConnection({
+    ...(credentials === undefined ? {} : { credentials }),
+    loadCredentials,
+    logger,
+    startWithoutSession: true,
+  })
 
-  const connection = await openReconnectingConnection({ credentials, loadCredentials, logger })
+  if (!connection.authenticated && unauthenticatedReason === undefined) {
+    unauthenticatedReason = 'The stored credentials did not open a session.'
+  }
 
   try {
-    const { server } = await createServer({ connection, logger })
+    const { server } = await createServer({
+      connection,
+      logger,
+      ...(unauthenticatedReason === undefined ? {} : { unauthenticatedReason }),
+    })
     const transport = new StdioServerTransport()
 
     const closed = new Promise<void>((resolve) => {

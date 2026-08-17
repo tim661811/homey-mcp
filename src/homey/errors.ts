@@ -275,7 +275,11 @@ export function classifyError(error: unknown, options: ClassifyErrorOptions = {}
   if (statusCode === 401) {
     return new HomeyMcpError(
       'not_connected',
-      `Homey rejected the saved session${operationSuffix}. Sessions last 24 hours, so this usually means it expired. Sign in again with "homey login" and restart this server, or set HOMEY_PAT to a Personal Access Token from https://tools.developer.homey.app/me.`,
+      // No longer says "restart this server". It stopped being true when the
+      // server learned to sign in again by itself: it re-reads the credential
+      // source on a refusal, so a new session is picked up in place. Telling
+      // someone to restart sends them to do work that changes nothing.
+      `Homey rejected the saved session${operationSuffix}. Sessions last 24 hours, so this usually means it expired. Sign in again with "homey login", or run "npx homey-mcp setup" and choose the Personal Access Token route, which does not expire. This server picks the new credential up by itself.`,
       details,
       { cause: error },
     )
@@ -357,7 +361,11 @@ export function classifyError(error: unknown, options: ClassifyErrorOptions = {}
   if (lowerCaseMessage.includes('invalid token') || lowerCaseMessage.includes('session expired')) {
     return new HomeyMcpError(
       'not_connected',
-      `Homey rejected the saved session${operationSuffix}. Sessions last 24 hours, so this usually means it expired. Sign in again with "homey login" and restart this server, or set HOMEY_PAT to a Personal Access Token from https://tools.developer.homey.app/me.`,
+      // No longer says "restart this server". It stopped being true when the
+      // server learned to sign in again by itself: it re-reads the credential
+      // source on a refusal, so a new session is picked up in place. Telling
+      // someone to restart sends them to do work that changes nothing.
+      `Homey rejected the saved session${operationSuffix}. Sessions last 24 hours, so this usually means it expired. Sign in again with "homey login", or run "npx homey-mcp setup" and choose the Personal Access Token route, which does not expire. This server picks the new credential up by itself.`,
       details,
       { cause: error },
     )

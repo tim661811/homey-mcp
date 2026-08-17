@@ -134,6 +134,9 @@ describe('createServer', () => {
     const names = (await client.listTools()).tools.map((tool) => tool.name)
 
     expect(names).toEqual([
+      // First on purpose: the only tool that works with no session, and the
+      // state a model has to leave before any other tool can do anything.
+      'homey_authenticate',
       'homey_home_overview',
       'homey_devices_search',
       'homey_device_get',
@@ -186,7 +189,17 @@ describe('createServer', () => {
     const client = await buildClient(CAPABILITIES)
     const names = (await client.listTools()).tools.map((tool) => tool.name)
 
-    expect(names.slice(3, 6)).toEqual(['homey_device_set_capability', 'homey_variable_set', 'homey_flow_start'])
+    // Anchored on the first tool of the group rather than on a fixed index. The
+    // hardcoded slice this replaced broke the moment a tool was added anywhere
+    // ahead of it, which says nothing about grouping and sends the reader to the
+    // wrong place.
+    const controlStart = names.indexOf('homey_device_set_capability')
+    expect(controlStart).toBeGreaterThan(-1)
+    expect(names.slice(controlStart, controlStart + 3)).toEqual([
+      'homey_device_set_capability',
+      'homey_variable_set',
+      'homey_flow_start',
+    ])
     expect(names.indexOf('homey_flows_list')).toBeGreaterThan(names.indexOf('homey_flow_start'))
   })
 
@@ -198,7 +211,7 @@ describe('createServer', () => {
     const secondNames = (await second.listTools()).tools.map((tool) => tool.name)
 
     expect(firstNames).toEqual(secondNames)
-    expect(firstNames[0]).toBe('homey_home_overview')
+    expect(firstNames[0]).toBe('homey_authenticate')
   })
 
   it('annotates read tools so a client does not prompt before reading a temperature', async () => {
