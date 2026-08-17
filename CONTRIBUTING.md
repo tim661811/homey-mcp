@@ -71,6 +71,33 @@ node scripts/scrub-fixtures.mjs tests/fixtures/raw tests/fixtures/local
 - `console.log` is banned in `src/`: stdout carries the JSON-RPC stream and any
   stray write corrupts it. Log to stderr through `src/util/log.ts`.
 
+## Trying a change in a real client before publishing
+
+Publish last, not first. A published version is permanent, and the failures this
+server is most likely to have are the ones no test sees: how it behaves when a
+credential expired, what a client shows when it exits, whether the handshake
+completes at all.
+
+Register a second server pointing at the local build, alongside the published
+one:
+
+```bash
+npm run build
+claude mcp add --scope user --transport stdio homey-dev \
+  -e PATH=/usr/local/bin:/usr/bin:/bin \
+  -- node "$PWD/dist/index.js" serve
+```
+
+Both then appear in the client: `homey` running whatever is on npm, and
+`homey-dev` running the working tree. Rebuild and restart the client to pick up a
+change. Remove it with `claude mcp remove homey-dev -s user` when finished.
+
+The explicit `PATH` is not optional decoration. A client passes its own
+environment to the server it starts, and that environment is frequently not the
+one the terminal has: on the machine this was written on, the client carried an
+older Node than the shell did, and the server correctly refused to run on it. See
+the note about node versions in CLAUDE.md.
+
 ## Releasing
 
 Maintainers only, and the details are easy to get wrong, so they live in
