@@ -77,6 +77,7 @@ import { readPackageMetadata } from '../server/createServer.js'
 import type { Logger } from '../util/log.js'
 import { createLogger } from '../util/log.js'
 import { maskSecret } from '../util/redact.js'
+import { readFlagValue } from './flags.js'
 import { checkNodeVersion, MINIMUM_NODE_MAJOR_VERSION } from './node-version.js'
 
 /** Where an Athom account Personal Access Token is created. Printed verbatim so it can be clicked. */
@@ -167,6 +168,7 @@ export async function runSetup(options: SetupOptions = {}): Promise<number> {
   }
 
   const readlineInterface = createInterface({ input, output, terminal: input.isTTY === true })
+  const httpMode = argv.includes('--http')
 
   const session: SetupSession = {
     write,
@@ -201,26 +203,50 @@ export async function runSetup(options: SetupOptions = {}): Promise<number> {
     }
 
     const useCliRoute = await walkHomeyCliRoute(session)
-    if (useCliRoute) {
-      return await finishWithHomeyCliSession({
-        write,
-        logger,
-        environment,
-        // Credential resolution reads our own file before the CLI's session, so
-        // an old file left in place would silently win over the login the user
-        // just chose. They already agreed to replace it.
-        configPathToDiscard: existing === null ? null : configPath,
-      })
+    const credentialExitCode = useCliRoute
+      ? await finishWithHomeyCliSession({
+          write,
+          logger,
+          environment,
+          // Credential resolution reads our own file before the CLI's session, so
+          // an old file left in place would silently win over the login the user
+          // just chose. They already agreed to replace it.
+          configPathToDiscard: existing === null ? null : configPath,
+          httpMode,
+        })
+      : await finishWithPersonalAccessToken({
+          readlineInterface,
+          write,
+          output,
+          logger,
+          environment,
+          configPath,
+          canPrompt: session.canPrompt,
+          httpMode,
+        })
+
+    if (credentialExitCode !== 0) return credentialExitCode
+
+    if (!httpMode) {
+      // One sentence, at the end, after the working instructions. Somebody who
+      // does not care about the browser sign-in reads one extra line.
+      const { HTTP_MODE_POINTER } = await import('./setupHttp.js')
+      for (const line of HTTP_MODE_POINTER) write(line)
+      write()
+      return 0
     }
 
-    return await finishWithPersonalAccessToken({
-      readlineInterface,
+    // Only now, because the credential half has to have succeeded before there
+    // is any point starting a service that would answer with nothing behind it.
+    const { finishWithHttpMode } = await import('./setupHttp.js')
+    const portValue = readFlagValue(argv, '--port')
+    return await finishWithHttpMode({
       write,
-      output,
-      logger,
+      argv,
       environment,
-      configPath,
-      canPrompt: session.canPrompt,
+      output,
+      input,
+      ...(portValue === null ? {} : { port: Number.parseInt(portValue, 10) }),
     })
   } catch (error) {
     const failure = classifyError(error, { operation: 'setup' })
@@ -640,6 +666,12 @@ interface FinishWithCliSessionOptions {
   environment: Record<string, string | undefined>
   /** An older credentials file the user agreed to replace, which must not be left to win. */
   configPathToDiscard: string | null
+  /**
+   * True when `--http` was given, in which case the stdio client entry is NOT
+   * printed. Printing it and then telling the reader to remove it, which is what
+   * the HTTP block has to say, is worse than not printing it at all.
+   */
+  httpMode: boolean
 }
 
 /**
@@ -681,7 +713,7 @@ async function finishWithHomeyCliSession(options: FinishWithCliSessionOptions): 
   options.write('If "homey login" is ever run again, or a different Homey is selected with "homey select",')
   options.write('this server follows along without any further setup.')
   options.write()
-  printClientInstructions(options.write)
+  if (!options.httpMode) printClientInstructions(options.write)
   return 0
 }
 
@@ -693,6 +725,8 @@ interface FinishWithTokenOptions {
   environment: Record<string, string | undefined>
   configPath: string
   canPrompt: boolean
+  /** See `FinishWithCliSessionOptions.httpMode`. */
+  httpMode: boolean
 }
 
 async function finishWithPersonalAccessToken(options: FinishWithTokenOptions): Promise<number> {
@@ -787,7 +821,7 @@ async function finishWithPersonalAccessToken(options: FinishWithTokenOptions): P
   options.write(`Token stored: ${maskSecret(personalAccessToken)}`)
   options.write()
 
-  printClientInstructions(options.write)
+  if (!options.httpMode) printClientInstructions(options.write)
   return 0
 }
 

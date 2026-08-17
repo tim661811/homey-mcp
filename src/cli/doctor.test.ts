@@ -4,7 +4,13 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { buildHomeyCliCheck, collectDoctorReport, renderCompatibilityReport, renderDoctorText } from './doctor.js'
+import {
+  buildHomeyCliCheck,
+  collectDoctorReport,
+  renderCompatibilityReport,
+  renderDoctorText,
+  readDoctorHttpPort,
+} from './doctor.js'
 import type { DoctorHomeyCli, DoctorReport } from './doctor.js'
 import type { HomeyCliInstallation, HomeyCliStoredState } from '../homey/homey-cli.js'
 import type { EntityIndex, HomeCache } from '../homey/cache.js'
@@ -496,6 +502,9 @@ const REPORT: DoctorReport = {
     selectedHomeyName: 'Homey Pro van Aniek',
     storedHomeyCount: 1,
   },
+  // Null rather than an empty object: not looked at is a different thing from
+  // looked at and not running.
+  httpMode: null,
 }
 
 describe('the Homey CLI check', () => {
@@ -705,5 +714,48 @@ describe('renderCompatibilityReport', () => {
 
     expect(text).toContain('localSecure')
     expect(text).toContain('answered in 25 ms')
+  })
+})
+
+describe('doctor --http', () => {
+  /** A port nothing holds, so the section reports a silent port and probes nothing else. */
+  async function findFreePort(): Promise<number> {
+    const { createServer } = await import('node:net')
+    return await new Promise<number>((resolve, reject) => {
+      const probe = createServer()
+      probe.once('error', reject)
+      probe.listen(0, '127.0.0.1', () => {
+        const { port } = probe.address() as { port: number }
+        probe.close(() => resolve(port))
+      })
+    })
+  }
+
+  it('reads the port off the arguments rather than always probing 8431', () => {
+    // Without this, doctor could only be aimed at the default port, so somebody
+    // running the service on another port was told nothing was listening on 8431
+    // and advised to install a second service, which is the two-servers case.
+    expect(readDoctorHttpPort(['--http', '--port', '8531'])).toBe(8531)
+    expect(readDoctorHttpPort(['--http'])).toBeUndefined()
+  })
+
+  it('probes that port, and its advice names it too', async () => {
+    const port = await findFreePort()
+
+    const report = await collectDoctorReport({
+      connection: fakeConnection(),
+      capabilities: CAPABILITIES,
+      skipInventory: true,
+      includeSystem: false,
+      environment: {},
+      includeHttpMode: true,
+      httpPort: port,
+    })
+
+    expect(report.httpMode?.port).toBe(port)
+    expect(report.httpMode?.url).toBe(`http://127.0.0.1:${port}/mcp`)
+    // The advice has to carry the port too, or it sends the user to install a
+    // service on a different one.
+    expect(JSON.stringify(report.checks)).toContain(`service install --port ${port}`)
   })
 })

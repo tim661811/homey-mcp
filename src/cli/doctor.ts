@@ -46,6 +46,7 @@ import { formatValue, renderKeyValueLines, renderTextBlock } from '../server/ren
 import { asString } from '../util/coerce.js'
 import type { Logger } from '../util/log.js'
 import { createLogger } from '../util/log.js'
+import type { DoctorHttpMode } from '../http/doctorSection.js'
 import { readFlagValue } from './flags.js'
 import { MINIMUM_NODE_MAJOR_VERSION } from './node-version.js'
 
@@ -127,6 +128,14 @@ export interface DoctorReport {
   capabilities: CapabilityRegistry | null
   inventory: DoctorInventory | null
   homeyCli: DoctorHomeyCli | null
+  /**
+   * The HTTP mode, when it was asked about.
+   *
+   * Null means it was not looked at, which is a different thing from "it is not
+   * running": this section costs a socket connection plus four requests, so it
+   * is skipped unless --http is given.
+   */
+  httpMode: DoctorHttpMode | null
 }
 
 export interface CollectDoctorReportOptions {
@@ -143,6 +152,10 @@ export interface CollectDoctorReportOptions {
   includeSystem?: boolean
   /** Report the live request queue. Only meaningful inside a running server, so it is off by default. */
   includeQueue?: boolean
+  /** Probe the loopback HTTP mode: the port, the challenge and the discovery documents. */
+  includeHttpMode?: boolean
+  /** The port the HTTP mode is expected on. Defaults to 8431. */
+  httpPort?: number
   /**
    * Report where the official Homey CLI is and what it is signed in to. Reads
    * two files and spawns nothing, so it is on by default. Defaults to true.
@@ -190,6 +203,7 @@ export async function collectDoctorReport(options: CollectDoctorReportOptions = 
     capabilities: null,
     inventory: null,
     homeyCli: null,
+    httpMode: null,
   }
 
   checks.push(checkNodeVersion(forSharing))
@@ -304,6 +318,18 @@ export async function collectDoctorReport(options: CollectDoctorReportOptions = 
     if (openedConnection !== null) await disconnectFromHomey(openedConnection)
   }
 
+  if (options.includeHttpMode === true) {
+    // Last, because it is about this machine rather than about the hub, and
+    // somebody reading top to bottom wants the Homey answered first.
+    const { collectHttpDoctorSection } = await import('../http/doctorSection.js')
+    const section = await collectHttpDoctorSection({
+      environment,
+      ...(options.httpPort === undefined ? {} : { port: options.httpPort }),
+    })
+    report.httpMode = section.httpMode
+    checks.push(...section.checks)
+  }
+
   if (forSharing) report.addresses = report.addresses.map(withheldAddressDetail)
 
   report.ok = checks.every((check) => check.status !== 'fail')
@@ -317,6 +343,22 @@ export interface RunDoctorOptions {
   output?: NodeJS.WritableStream
 }
 
+/**
+ * The port `doctor --http` should probe, or undefined for the default.
+ *
+ * Its own function so the argument reading is asserted directly. Driving it
+ * through `runDoctor` would mean letting the whole Homey half run, which reaches
+ * the network and, worse, would read whatever credentials the machine running
+ * the suite happens to have.
+ *
+ * `checkFlags` has already refused anything that is not a whole number inside
+ * 1..65535 by the time this runs, so a value here is safe to parse.
+ */
+export function readDoctorHttpPort(argv: string[]): number | undefined {
+  const flag = readFlagValue(argv, '--port')
+  return flag === null ? undefined : Number.parseInt(flag, 10)
+}
+
 /** The `doctor` subcommand. Returns the process exit code: 0 when nothing failed. */
 export async function runDoctor(options: RunDoctorOptions = {}): Promise<number> {
   const argv = options.argv ?? []
@@ -324,6 +366,7 @@ export async function runDoctor(options: RunDoctorOptions = {}): Promise<number>
   const asJson = argv.includes('--json')
   const asCompatibilityReport = argv.includes('--report')
   const configPath = readFlagValue(argv, '--config')
+  const httpPort = readDoctorHttpPort(argv)
 
   const report = await collectDoctorReport({
     ...(options.environment === undefined ? {} : { environment: options.environment }),
@@ -331,6 +374,8 @@ export async function runDoctor(options: RunDoctorOptions = {}): Promise<number>
     ...(configPath === null ? {} : { configPath }),
     skipInventory: argv.includes('--quick'),
     includeSystem: !argv.includes('--quick'),
+    includeHttpMode: argv.includes('--http'),
+    ...(httpPort === undefined ? {} : { httpPort }),
     // Collected scrubbed rather than scrubbed at the last moment, so `--report`
     // cannot leak through a field a later check adds and this renderer forgets.
     forSharing: asCompatibilityReport,
@@ -410,6 +455,19 @@ export function renderDoctorText(report: DoctorReport): string {
             ['flow cards', report.inventory.flowCards],
             ['insights logs', report.inventory.insightsLogs],
             ['logic variables', report.inventory.logicVariables],
+          ]),
+        },
+    report.httpMode === null
+      ? null
+      : {
+          heading: 'HTTP mode',
+          lines: renderKeyValueLines([
+            ['address', report.httpMode.url],
+            ['port', report.httpMode.portIsListening ? `${report.httpMode.port} (answering)` : `${report.httpMode.port} (silent)`],
+            // Counts only, never a client id and never token material.
+            ['assistants registered', report.httpMode.registeredClients],
+            ['tokens live', `${report.httpMode.liveAccessTokens} access, ${report.httpMode.liveRefreshTokens} refresh`],
+            ['sign-in state written', report.httpMode.authStateAgeDays === null ? 'never' : `${report.httpMode.authStateAgeDays} days ago`],
           ]),
         },
     {

@@ -48,9 +48,26 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   // has to cover `setup`, whose own runner reads its arguments with `includes`
   // and so cannot notice one it does not know, and an argument list that is
   // about to be refused must not first pay for the Homey client and the MCP SDK.
-  const { checkFlags, DOCTOR_FLAGS, SERVE_FLAGS, SETUP_FLAGS } = await import('./cli/flags.js')
+  const { checkFlags, DOCTOR_FLAGS, SERVE_FLAGS, SERVICE_FLAGS, SETUP_FLAGS } = await import('./cli/flags.js')
 
   switch (firstArgument) {
+    case 'service': {
+      // A positional verb, which `checkFlags` refuses by design, so it is read
+      // and stripped before the rest of the line is checked.
+      const [verb, ...serviceFlags] = rest
+      if (verb === undefined || verb.startsWith('-')) {
+        return reportUsageProblem('"homey-mcp service" needs one of: install, status, uninstall.')
+      }
+      if (verb !== 'install' && verb !== 'status' && verb !== 'uninstall') {
+        return reportUsageProblem(
+          `"${verb}" is not something "homey-mcp service" does. It takes one of: install, status, uninstall.`,
+        )
+      }
+      const problem = checkFlags(serviceFlags, SERVICE_FLAGS, `homey-mcp service ${verb}`)
+      if (problem !== null) return reportUsageProblem(problem)
+      const { runService } = await import('./cli/service.js')
+      return await runService({ verb, argv: serviceFlags })
+    }
     case 'setup': {
       const problem = checkFlags(rest, SETUP_FLAGS, 'homey-mcp setup')
       if (problem !== null) return reportUsageProblem(problem)
@@ -130,18 +147,37 @@ function usage(): string {
     '      one expires: it reads the credential source again and signs in once',
     '      more, so it can be left running for days.',
     '',
-    '  homey-mcp setup [--yes]',
+    '  homey-mcp serve --http [--port <number>]',
+    '      Run the server on http://127.0.0.1:8431/mcp instead of on stdio. Your',
+    '      assistant then shows "needs authentication" and signs you in through your',
+    '      browser. Nothing starts this mode for you, so it needs the background',
+    '      service below; without it your assistant shows a red cross instead.',
+    '      --http          use the HTTP transport rather than stdio',
+    '      --port <number> listen somewhere other than 8431',
+    '',
+    '  homey-mcp setup [--yes] [--http] [--port <number>]',
     '      Find your Homey, check it can be reached, save the credentials and print',
     '      the exact line to register this server with your assistant. Offers to',
     '      install the official Homey CLI and sign in, which is what allows Flows',
     '      to be created; nothing is installed without an explicit yes.',
     '      --yes, -y  answer yes to those offers, for an unattended run',
+    '      --http     set up the browser sign-in mode instead of the stdio one',
+    '      --port <number>  the port that mode should use',
     '',
-    '  homey-mcp doctor [--json] [--report] [--quick] [--config <path>]',
+    '  homey-mcp service install [--port <number>] [--yes] | status | uninstall [--yes]',
+    '      Write, inspect and remove the per-user service that keeps "serve --http"',
+    '      running. Nothing is installed without an explicit yes, and the exact file',
+    '      is shown before it is written.',
+    '      --yes, -y  answer yes to writing or removing the file',
+    '      --port <number>  the port to record in the service definition',
+    '',
+    '  homey-mcp doctor [--json] [--report] [--quick] [--config <path>] [--http] [--port <number>]',
     '      Check everything and name the fix for anything that is wrong.',
     '      --json    the same report as JSON, scrubbed too when --report is given',
     '      --report  a scrubbed version to paste into a bug report',
     '      --quick   skip the counts and the memory reading, one request each',
+    '      --http    also check the HTTP mode: the port, the service and the endpoints',
+    '      --port <number>  check that port rather than 8431',
     '',
     'Options:',
     '  --version, -v   print the version',

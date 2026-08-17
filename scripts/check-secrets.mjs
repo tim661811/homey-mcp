@@ -46,11 +46,21 @@ const RULES = [
     description: 'hardcoded token or secret value',
     // Matches access_token: "...", refreshToken='...', HOMEY_PAT=... with a real value.
     pattern: /\b(?:access_?token|refresh_?token|session_?token|api_?key|client_?secret|homey_pat|password)\b\s*[:=]\s*['"`]?[A-Za-z0-9._~+/-]{16,}/gi,
-    // `access_token: CLOUD_ACCESS_TOKEN` assigns a constant, not a secret. Every
-    // language spells constants in screaming snake case and no real credential
-    // looks like one, so this costs no coverage. It is worth the extra rule:
-    // a scanner that cries wolf is a scanner people start bypassing.
-    skipMatch: (match) => /[:=]\s*[A-Z][A-Z0-9_]*$/.test(match),
+    // A secret that is hardcoded is a QUOTED LITERAL. These three shapes are
+    // code referring to a value it does not contain, and flagging them taught
+    // nobody anything:
+    //
+    //   access_token: CLOUD_ACCESS_TOKEN     a constant
+    //   accessToken: tokens.access_token     a property read
+    //   accessToken = mintOpaqueSecret(...)  a call
+    //
+    // The test is the absence of an opening quote before the value, plus a value
+    // that is shaped like an identifier or a dotted path. A real credential
+    // pasted into source is quoted, and the quoted case is still caught.
+    //
+    // This matters more than it looks: a scanner that cries wolf is a scanner
+    // people start bypassing with --no-verify, and then it protects nothing.
+    skipMatch: (match) => /[:=]\s*[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z0-9_$]+)*$/.test(match),
   },
   {
     id: 'athom-id',
@@ -124,7 +134,12 @@ for (const path of listFiles()) {
 
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index]
+      // The marker counts on the line itself or on the one above it. Same-line
+      // only forced a trailing comment onto whatever line matched, which on a
+      // long object literal is where a reason goes to be unreadable, and the
+      // reason is the part that makes the exception reviewable.
       if (line.includes('check-secrets-allow')) continue
+      if (index > 0 && (lines[index - 1] ?? '').includes('check-secrets-allow')) continue
       rule.pattern.lastIndex = 0
       const match = rule.pattern.exec(line)
       if (match && !rule.skipMatch?.(match[0])) {

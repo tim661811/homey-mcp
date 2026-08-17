@@ -46,6 +46,26 @@ export interface FlagSpec {
   takesValue?: boolean
   /** What the value is called in the usage line, for example `path` or `level`. */
   valueName?: string
+  /**
+   * True when the value has to be a whole number.
+   *
+   * `readFlagValue` only guarantees a token that does not start with a dash, so
+   * without this `--port eight` becomes `NaN` and the server binds nothing while
+   * reporting no problem at all.
+   */
+  valueIsWholeNumber?: boolean
+  /**
+   * The range a whole-number value has to fall in, both ends included.
+   *
+   * `valueIsWholeNumber` alone lets `--port 0` through, and 0 is the one number
+   * that fails in a way nothing reports: `listen(0)` asks the kernel for an
+   * ephemeral port, so the server binds something random while every URL it
+   * advertises, every token audience and the client entry itself say port 0.
+   * Written into a service unit with Restart=always it picks a different random
+   * port on every restart. That is the "the port must never fall back" rule
+   * reached from a direction the EADDRINUSE guard does not cover.
+   */
+  valueRange?: { minimum: number; maximum: number }
   /** One line, phrased for someone reading it inside a rejection message. */
   description: string
 }
@@ -71,6 +91,20 @@ const CONFIG_FLAG: FlagSpec = {
   description: 'read credentials from this file instead of the usual places',
 }
 
+const HTTP_FLAG: FlagSpec = {
+  name: '--http',
+  description: 'the loopback HTTP mode, where your assistant signs in through your browser',
+}
+
+const PORT_FLAG: FlagSpec = {
+  name: '--port',
+  takesValue: true,
+  valueName: 'number',
+  valueIsWholeNumber: true,
+  valueRange: { minimum: 1, maximum: 65_535 },
+  description: 'the port the HTTP mode listens on (default 8431)',
+}
+
 export const SERVE_FLAGS: FlagSpec[] = [
   CONFIG_FLAG,
   {
@@ -79,6 +113,8 @@ export const SERVE_FLAGS: FlagSpec[] = [
     valueName: 'level',
     description: 'silent, error, warn, info (default) or debug',
   },
+  HTTP_FLAG,
+  PORT_FLAG,
   HELP_FLAG,
 ]
 
@@ -87,6 +123,18 @@ export const SETUP_FLAGS: FlagSpec[] = [
     name: '--yes',
     aliases: ['-y'],
     description: 'answer yes to the offers to install and sign in, for an unattended run',
+  },
+  HTTP_FLAG,
+  PORT_FLAG,
+  HELP_FLAG,
+]
+
+export const SERVICE_FLAGS: FlagSpec[] = [
+  PORT_FLAG,
+  {
+    name: '--yes',
+    aliases: ['-y'],
+    description: 'answer yes to writing or removing the service file, for an unattended run',
   },
   HELP_FLAG,
 ]
@@ -99,6 +147,12 @@ export const DOCTOR_FLAGS: FlagSpec[] = [
     description: 'skip the counts and the memory reading, which cost one request each',
   },
   CONFIG_FLAG,
+  HTTP_FLAG,
+  // Taken here too, and not as a nicety: without it `doctor --http` could only
+  // ever probe 8431, so the one command that says which of four things is wrong
+  // could not be aimed at the installation `portInUseMessage` tells the user to
+  // create. It reported "nothing is listening on 8431" about a healthy server.
+  PORT_FLAG,
   HELP_FLAG,
 ]
 
@@ -161,6 +215,33 @@ export function checkFlags(argv: string[], specs: FlagSpec[], commandName: strin
           `Run it as: ${commandName} ${spec.name} <${spec.valueName ?? 'value'}>`,
         ].join('\n')
       }
+      if (spec.valueIsWholeNumber === true && !/^\d+$/.test(value)) {
+        return [
+          `"${spec.name}" needs a whole number after it, and "${value}" is not one.`,
+          '',
+          `Run it as: ${commandName} ${spec.name} 8431`,
+        ].join('\n')
+      }
+      const range = spec.valueRange
+      if (range !== undefined && spec.valueIsWholeNumber === true) {
+        const numeric = Number.parseInt(value, 10)
+        if (numeric < range.minimum || numeric > range.maximum) {
+          return [
+            `"${spec.name} ${value}" is outside the range ${range.minimum} to ${range.maximum}.`,
+            ...(numeric === 0
+              ? [
+                  '',
+                  '0 asks the operating system to pick any free port. The port is part of the address',
+                  'your assistant stores, so a server that bound a different port on every start would',
+                  'be running and unreachable, which reads as ConnectionRefused with no explanation.',
+                ]
+              : []),
+            '',
+            `Run it as: ${commandName} ${spec.name} 8431`,
+          ].join('\n')
+        }
+      }
+
       // Skipped so a value that happens to look like a word is not read as an
       // unexpected argument on the next pass.
       index += 1

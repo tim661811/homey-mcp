@@ -138,6 +138,65 @@ If that trade is not one you want to make, the honest summary is that this
 project's headline feature depends on a file it does not own, and the supported
 credential cannot do the headline feature.
 
+## Browser sign-in mode (optional)
+
+By default this server runs on stdio, and your assistant starts it for you.
+That is what `npx homey-mcp setup` sets up, and it is what most people want.
+
+There is a second mode. `npx homey-mcp setup --http` runs the server on
+`http://127.0.0.1:8431/mcp` instead. Your assistant then shows it as
+**"needs authentication"** in yellow, with an Authenticate option that opens a
+page in your browser. On that page you approve the connection and, if your Homey
+is not signed in, you sign it in there rather than in a terminal.
+
+**What it costs.** Nothing starts an HTTP server for you, so this mode needs a
+background service. `setup --http` offers to install a per-user one (systemd on
+Linux, a LaunchAgent on macOS) and shows you the exact file before writing
+anything. If that service is not running, your assistant shows a red cross saying
+it could not connect. `npx homey-mcp doctor --http` says which of four things is
+wrong, and `npx homey-mcp service status` says whether it is running.
+
+**Another port.** `--port <number>` moves it, on `serve`, `setup`, `service` and
+`doctor` alike. The port is part of the address your assistant stores, so it never
+falls back to a different one and every command that reports on the mode has to be
+given the same port. Each port keeps its own registrations and tokens, so two
+servers on two ports do not interfere.
+
+That is the honest trade. The stdio mode has no daemon to keep alive; this mode
+has a browser sign-in and a badge that tells you when it needs one.
+
+**Where it listens, and who can reach it.** Only `127.0.0.1`, never a LAN
+address, and there is no option to change that. The `Host` and `Origin` headers
+are both checked, so a web page you happen to have open cannot reach it.
+
+The approval click in the browser is **not** a gate on its own, and it is worth
+being plain about why. The page hands its own form fields to whoever asked for it,
+and a loopback socket carries no proof of which account opened it, so the whole
+sign-in can be driven by a script with no browser anywhere. So the server checks
+who is on the other end of the connection instead:
+
+- **On Linux** it reads the account that owns the far end of the socket out of
+  `/proc/net/tcp`. A sign-in started by any account other than the one running the
+  server is refused outright, page and all. You will never notice this.
+- **Where the kernel will not answer that** (macOS, or a container without
+  `/proc`) it asks for an approval code instead. The code lives in the server's own
+  state file, which is mode `0600` in your config directory, so being able to read
+  it is the proof that you are the owner. `npx homey-mcp service status` prints it.
+  Three wrong codes close the sign-in and a new one has to be started.
+
+Two things that still hold on a machine with more than one account. Where the
+approval code is in use, another account can still *fetch* the page, which names
+your Homey and its firmware; only the two actions that grant something are gated.
+And none of this is a defence against a program already running as **you** on this
+machine, which can read your credentials file directly. This is a home-machine
+bar, not a hosted-service bar.
+
+**Windows.** The supervised service is Linux and macOS for now. On Windows the
+mode still works, started by hand with `npx homey-mcp serve --http`, or from a
+Scheduled Task at logon that you set up yourself. Nothing is shipped for it
+because nobody has verified one on real hardware, and this project does not ship
+platform code it cannot test.
+
 ## What it can do
 
 **Understand your home.** One call returns the zone tree, devices by room and

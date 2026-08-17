@@ -101,6 +101,37 @@ describe('main, on the arguments it is given', () => {
     for (const spec of [...SERVE_FLAGS, ...SETUP_FLAGS, ...DOCTOR_FLAGS]) {
       expect(usage, `${spec.name} is accepted but not documented`).toContain(spec.name)
     }
+
+    // Per subcommand as well, because the check above is satisfied by the flag
+    // appearing anywhere at all: `doctor --port` was accepted while only the
+    // `serve` synopsis mentioned a port, so the one command that says which of
+    // four things is wrong looked as though it could not be aimed anywhere.
+    // `serve` is described in two paragraphs, the stdio one and the HTTP one, so
+    // a subcommand's documentation is every paragraph that names it rather than
+    // one line.
+    const paragraphsFor = (verbs: string[]): string =>
+      usage
+        .split('\n\n')
+        .filter((paragraph) => {
+          const synopsis = paragraph.split('\n').find((line) => line.startsWith('  homey-mcp')) ?? ''
+          return verbs.some((verb) => synopsis.includes(verb))
+        })
+        .join('\n')
+
+    for (const [verbs, specs] of [
+      [['homey-mcp serve', 'homey-mcp [serve]'], SERVE_FLAGS],
+      [['homey-mcp setup'], SETUP_FLAGS],
+      [['homey-mcp doctor'], DOCTOR_FLAGS],
+    ] as const) {
+      const documentation = paragraphsFor([...verbs])
+      expect(documentation, `nothing in the usage describes ${verbs[0]}`).not.toBe('')
+      for (const spec of specs) {
+        if (spec.name === '--help') continue
+        expect(documentation, `${verbs[0]} accepts ${spec.name} but its own paragraph never mentions it`).toContain(
+          spec.name,
+        )
+      }
+    }
   })
 
   it('says the session renews itself, because a day-old server that answers nothing looks broken', async () => {

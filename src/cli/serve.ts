@@ -64,6 +64,22 @@ export async function runServe(options: ServeOptions = {}): Promise<number> {
       ...(requestedLevel === null ? {} : { level: requestedLevel }),
     })
 
+  // The HTTP mode is a sibling module reached here and imported on demand, so
+  // the stdio path below never loads express, the OAuth router, cors or
+  // express-rate-limit. Everything after this branch is exactly what it was.
+  if (argv.includes('--http')) {
+    const port = readFlagValue(argv, '--port')
+    const { runServeHttp } = await import('./serveHttp.js')
+    return await runServeHttp({
+      argv,
+      environment,
+      logger,
+      errorOutput,
+      ...(configPath === null ? {} : { configPath }),
+      ...(port === null ? {} : { port: Number.parseInt(port, 10) }),
+    })
+  }
+
   // Read again on every reconnect rather than captured here. The Homey CLI
   // refreshes its own session in the same file this reads, so when a 24 hour
   // session dies the replacement is usually already on disk.
