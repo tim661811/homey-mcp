@@ -94,13 +94,26 @@ shape or move in any CLI release. It has moved once already, which is why both
 locations are checked. So:
 
 - A Homey CLI update can break this server without a line changing here. The
-  symptom is a start that reports no usable credentials, and
+  symptom is every tool reporting that the server is not signed in, and
   `npx homey-mcp doctor` then says whether the CLI is installed, whether a login
   is stored on this machine and which Homey is selected, which is what separates
   "the file moved again" from "the session simply expired".
 - This server only ever **reads** that file. It never writes it, and it never
   drives the CLI in the background. `homey login` and `homey select` are run by
   `setup` only, with you watching.
+- **A missing or expired credential does not stop the server from starting.** It
+  starts, completes the handshake, and lists its tools, so your client shows it as
+  connected rather than as a failure with no explanation. Every tool that needs
+  the Homey then refuses with what to do about it. That matters more than it
+  sounds: a client cannot show a reason for a process that exited, so exiting
+  turned the most ordinary situation there is, a session that lapsed overnight,
+  into a red cross with nothing to act on.
+- **`homey_authenticate` is how you recover without restarting anything.** Run
+  `homey login`, or `npx homey-mcp setup` for the token that does not expire, and
+  then call that tool. It reads the credential source again and signs in with
+  whatever it finds. It does not open a browser and it never asks you for a token:
+  the MCP specification forbids collecting credentials that way, and everything a
+  tool returns is kept in the conversation long after the call.
 - A session in it lasts exactly **24 hours**, so a server left running outlives
   its own credential every day. It does not stop when that happens: the first
   call Homey refuses makes it read the credential source again and sign in once
