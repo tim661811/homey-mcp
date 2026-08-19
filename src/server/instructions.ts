@@ -153,6 +153,10 @@ export function buildServerInstructions(options: BuildServerInstructionsOptions)
       '5. A card id is called "cardId" everywhere: on "homey_flowcards_search", on "homey_flowcard_describe", on "homey_flowcard_autocomplete", on every card inside "homey_flow_validate", "homey_flow_create" and "homey_flow_update", and on every card these tools report back. Carry the value across unchanged rather than renaming it.',
       '6. Check the whole thing with "homey_flow_validate" before writing anything. It is a client-side check that costs nothing and catches the mistakes this firmware reports with misleading messages.',
       '7. Create it with "homey_flow_create". A new flow is created disabled and in a folder named "AI", so nothing starts running the house the moment it is written. Tell the user where to find it and that they must enable it themselves.',
+      // Organisation is the step that gets skipped, because the flow already
+      // works by the time anyone thinks of it. Naming it as step 8 is what makes
+      // it part of the job rather than an afterthought.
+      '8. Put it where it belongs. Everything this server creates lands in "AI", which is a staging area rather than a home. Ask where it should live, and move it with "homey_flow_move"; "homey_flow_folders_list" shows what folders exist and "homey_flow_folder_create" makes a new one. Moving a flow changes nothing about what it does.',
     ].join('\n'),
   )
 

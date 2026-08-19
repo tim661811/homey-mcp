@@ -73,7 +73,7 @@ describe('buildServerInstructions', () => {
       .split('\n')
       .filter((line) => /^\d\. /.test(line))
 
-    expect(steps).toHaveLength(7)
+    expect(steps).toHaveLength(8)
     expect(steps[0]).toContain('homey_devices_search')
     expect(steps[1]).toContain('homey_flowcards_search')
     expect(steps[2]).toContain('homey_flowcard_describe')
@@ -81,6 +81,9 @@ describe('buildServerInstructions', () => {
     expect(steps[4]).toContain('"cardId"')
     expect(steps[5]).toContain('homey_flow_validate')
     expect(steps[6]).toContain('homey_flow_create')
+    // Organisation is the step that gets skipped, because the flow works by the
+    // time anyone thinks of it. Numbering it is what makes it part of the job.
+    expect(steps[7]).toContain('homey_flow_move')
   })
 
   // Step 4 is reached straight from step 3, and the two tools once named the

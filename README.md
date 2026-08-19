@@ -151,6 +151,13 @@ has around 800 of them), inspect a card's arguments and tokens, resolve device
 arguments, validate a proposed Flow client-side, then create it. Advanced Flows
 too, where the hardware supports them.
 
+**Keep them organised.** List the folder tree with a flow count per folder,
+create folders and nest them, rename or move one, and move flows between them in
+a batch. Moving a flow changes where it lives and nothing about what it does. A
+folder that still holds flows cannot be deleted, which is the Homey's own rule
+rather than this server's, so the tool says which flows to move first instead of
+passing on a localised "an unknown error occurred".
+
 **Write HomeyScript scripts.** List, read, create, update, run and delete the
 scripts that run on the Homey itself, for logic no Flow card can express. Running
 one reports what it returned, and reports a script that failed with the line it

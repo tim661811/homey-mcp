@@ -208,12 +208,13 @@ async function registerToolModules(server: McpServer, context: ServerContext): P
     registered.push(name)
   }
 
-  const [authenticate, overview, devices, flows, flowCards, scripts, insights, energy, weather, doctor] = await Promise.all([
+  const [authenticate, overview, devices, flows, flowCards, folders, scripts, insights, energy, weather, doctor] = await Promise.all([
     import('./tools/authenticate.js'),
     import('./tools/overview.js'),
     import('./tools/devices.js'),
     import('./tools/flows.js'),
     import('./tools/flowcards.js'),
+    import('./tools/folders.js'),
     import('./tools/scripts.js'),
     import('./tools/insights.js'),
     import('./tools/energy.js'),
@@ -231,6 +232,9 @@ async function registerToolModules(server: McpServer, context: ServerContext): P
   register('devices', devices.registerDevicesTools)
   register('flows', flows.registerFlowTools)
   register('flowcards', flowCards.registerFlowCardTools)
+  // Organisation, not behaviour: these sit with the flow tools because that is
+  // what they organise, and after them because tidying follows building.
+  register('folders', folders.registerFolderTools)
 
   // Advanced Flow is both a firmware feature and a paid unlock on the older
   // hardware, so its tools are left out where the probe found the route absent.
