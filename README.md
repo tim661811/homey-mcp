@@ -151,6 +151,20 @@ has around 800 of them), inspect a card's arguments and tokens, resolve device
 arguments, validate a proposed Flow client-side, then create it. Advanced Flows
 too, where the hardware supports them.
 
+**Write HomeyScript scripts.** List, read, create, update, run and delete the
+scripts that run on the Homey itself, for logic no Flow card can express. Running
+one reports what it returned, and reports a script that failed with the line it
+failed on, so this is also how a script gets debugged. HomeyScript is an app
+rather than a firmware feature, so if it is not installed the tools offer to
+install it and install nothing without an explicit yes.
+
+Scripts are steered toward being reusable rather than toward whatever works
+once: take what varies as `args[0]` from the Flow card, look a device up by zone
+and capability rather than by an id pasted into the code, and prefer answering a
+question so the Flow can act on the answer. An id written into a script is
+reported as a warning rather than refused, because sometimes there is no better
+way.
+
 **Answer questions about history.** Find the right Insights series from a plain
 description, query one or several at a resolution, compare two periods, and get
 statistics with an honest coverage figure. Live power draw, and energy over time
