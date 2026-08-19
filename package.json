@@ -1,6 +1,6 @@
 {
   "name": "homey-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Model Context Protocol server for Homey Pro: read your home, query sensor history, and build real Flows from a plain-language wish.",
   "keywords": [
     "homey",
