@@ -165,6 +165,12 @@ failed on, so this is also how a script gets debugged. HomeyScript is an app
 rather than a firmware feature, so if it is not installed the tools offer to
 install it and install nothing without an explicit yes.
 
+What it cannot do is read `log()` output: that goes to the HomeyScript app's own
+console, and no route here reaches it. The run answers with the script's return
+value instead, so anything worth checking belongs there. The tools say so, which
+is the point: otherwise checking whether a script works means asking you to open
+the Homey app and read the console back.
+
 Scripts are steered toward being reusable rather than toward whatever works
 once: take what varies as `args[0]` from the Flow card, look a device up by zone
 and capability rather than by an id pasted into the code, and prefer answering a

@@ -46,6 +46,25 @@ const REUSABILITY_GUIDANCE = [
   'A hard-coded device id is acceptable when there is genuinely no other way, or when a lookup would be more fragile than the id. It is the exception, and it is worth a comment saying why.',
 ].join(' ')
 
+/**
+ * What to do instead of `log()`, said wherever a script is written or run.
+ *
+ * `log()` output goes to the HomeyScript app's own console over a channel this
+ * server cannot read: the app's Web API has no log route, and the realtime
+ * events it does emit do not carry it. Measured, not assumed.
+ *
+ * The consequence is worth naming rather than leaving to be discovered. Without
+ * this, checking whether a script worked means asking the person to open the
+ * Homey app and read the console back, which turns them into a relay for their
+ * own assistant. What the run DOES answer with is the return value, so anything
+ * worth seeing belongs there.
+ */
+const OUTPUT_GUIDANCE = [
+  'This server cannot see `log()` output: it goes to the HomeyScript app console and no route here reads it.',
+  'What comes back is the return value, so return whatever needs checking rather than logging it.',
+  'While a script is being written, return an object with the intermediate values in it; trim it to the real answer once it works.',
+].join(' ')
+
 /** UUIDs and Athom's 24 hex character ids, which is what a pasted device id looks like. */
 const IDENTIFIER_PATTERN = /\b(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{24})\b/gi
 
@@ -254,6 +273,7 @@ export function registerScriptTools(server: McpServer, context: ServerContext): 
         'Creates a new script and returns the id the Homey assigned to it. Use that id afterwards: the name is not an address, and two scripts may share one.',
         'The script runs on the Homey, so it has the Homey API available as `Homey`, writes output with `log()`, and can hand a value back to the Flow that started it with `return` or `tag()`.',
         REUSABILITY_GUIDANCE,
+        OUTPUT_GUIDANCE,
         'Run it with homey_script_run once created, because a script that has never run is a script nobody has checked.',
       ].join(' '),
       annotations: WRITE_TOOL_ANNOTATIONS,
@@ -301,6 +321,7 @@ export function registerScriptTools(server: McpServer, context: ServerContext): 
       description: [
         'Replaces the code of a script that already exists, found by id or exact name. The previous code is returned so the change can be undone from the result alone.',
         REUSABILITY_GUIDANCE,
+        OUTPUT_GUIDANCE,
       ].join(' '),
       annotations: WRITE_TOOL_ANNOTATIONS,
       inputSchema: {
@@ -347,6 +368,7 @@ export function registerScriptTools(server: McpServer, context: ServerContext): 
       description: [
         'Runs a script on the Homey now and reports what it returned.',
         'A script that throws is reported here as a normal answer with the error and the line it happened on, so this is also how a script gets debugged.',
+        OUTPUT_GUIDANCE,
         'It really runs: anything the script does to the house, it does.',
       ].join(' '),
       // Not idempotent and not a read: a script can switch a light, and running

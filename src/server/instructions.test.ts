@@ -123,6 +123,17 @@ describe('buildServerInstructions', () => {
       expect(instructions).toContain('without the user saying yes')
     })
 
+    it('says log output cannot be read here, so nobody is asked to relay it', () => {
+      // Measured: the HomeyScript app has no log route and its realtime events
+      // do not carry console output. Without saying so, checking whether a
+      // script worked means asking the owner to open the app and read it back,
+      // which makes them a relay for their own assistant.
+      const instructions = build()
+
+      expect(instructions).toContain('log()')
+      expect(instructions).toContain('do not ask the user to paste it back')
+    })
+
     it('says to run a script after writing it', () => {
       const instructions = build()
 
