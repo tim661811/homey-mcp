@@ -350,9 +350,9 @@ export function buildUnauthenticatedInstructions(reason?: string): string {
     '',
     'Every tool that needs the Homey will refuse with an explanation until this is fixed. Do not guess device names, rooms or flows in the meantime, and do not tell the user what their home contains: nothing has been read.',
     '',
-    'To fix it, call "homey_authenticate". It opens a browser window on the machine running this server, where the user signs in to their Athom account. Tell them to expect that window.',
+    'To fix it, the user signs in where Athom can talk to them, and then you call "homey_authenticate" to pick that up. It does not open a browser itself, so do not tell them to expect a window.',
     '',
-    'If that is not possible, for example because this server runs on a different machine than the user is sitting at, tell them to run "npx homey-mcp setup" in a terminal and choose the Personal Access Token route. That token does not expire, while a browser sign-in lasts 24 hours.',
+    'Tell them to run "homey login" in a terminal on the machine running this server, or "npx homey-mcp setup" if they have never set it up. A browser sign-in lasts 24 hours; the Personal Access Token route that setup offers does not expire, so it is the better answer for someone who is tired of signing in again.',
     '',
     'Once signed in, everything else in this server works normally and the tools describe themselves.',
   ]

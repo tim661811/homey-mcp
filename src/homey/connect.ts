@@ -171,9 +171,12 @@ export async function connectToHomey(
  * How long to wait before trying to rebuild a session again after an attempt.
  *
  * A rebuild walks the whole address ladder, so without a floor a Homey that is
- * simply off the network would get one full ladder walk per tool call. Long
- * enough to keep that quiet, short enough that a user who has just run
- * "homey login" does not sit waiting.
+ * simply off the network would get one full ladder walk per tool call.
+ *
+ * It applies to attempts nobody asked for. Signing in through
+ * "homey_authenticate" is a person saying "try again now" and passes
+ * `requestedByUser`, so nobody waits out this window after running
+ * "homey login".
  */
 export const DEFAULT_SESSION_RETRY_INTERVAL_MS = 30_000
 
@@ -338,10 +341,21 @@ export async function openReconnectingConnection(
    * that, a client that fires several tool calls at once would sign in several
    * times over, on a hub that refuses requests arriving together.
    */
-  async function ensureFreshSession(trigger: HomeyMcpError): Promise<void> {
+  async function ensureFreshSession(
+    trigger: HomeyMcpError,
+    options: { requestedByUser?: boolean } = {},
+  ): Promise<void> {
     if (rebuildInFlight !== null) return await rebuildInFlight
 
-    if (now() - lastAttemptAt < retryIntervalMs) {
+    // An attempt the user asked for skips the window, and only the window: a
+    // rebuild already running is still joined rather than duplicated. The window
+    // exists so a hub that is off the network is not walked once per tool call,
+    // which is about calls nobody made on purpose. "homey_authenticate" is the
+    // opposite of that. Without this the whole recovery route reads as broken:
+    // a tool fails, the user runs "homey login" because the failure told them
+    // to, calls the tool within the next 30 seconds, and is handed the same
+    // sentence telling them to run "homey login".
+    if (options.requestedByUser !== true && now() - lastAttemptAt < retryIntervalMs) {
       // Already tried a moment ago. What this window is for is the work: a
       // rebuild walks the whole address ladder, and a Homey that is off the
       // network would otherwise get one walk per tool call. It is not for the
@@ -403,13 +417,16 @@ export async function openReconnectingConnection(
    * startup. The cooldown inside `ensureFreshSession` keeps a hub that is off the
    * network from being walked once per call.
    */
-  async function requireSession(): Promise<HomeyConnectionWithDiagnostics> {
+  async function requireSession(
+    options: { requestedByUser?: boolean } = {},
+  ): Promise<HomeyConnectionWithDiagnostics> {
     if (current !== null) return current
 
     try {
       await ensureFreshSession(
         startupFailure ??
           new HomeyMcpError('not_connected', 'This server has no Homey session yet.', { sessions: sessionCount }),
+        options,
       )
     } catch (error) {
       // The rebuild's own message says what the hub refused, which is the useful
@@ -478,7 +495,7 @@ export async function openReconnectingConnection(
       return current !== null
     },
     authenticate: async (): Promise<HomeyIdentity> => {
-      const session = await requireSession()
+      const session = await requireSession({ requestedByUser: true })
       return session.identity
     },
     queue,

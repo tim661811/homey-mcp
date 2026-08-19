@@ -168,7 +168,6 @@ export async function runSetup(options: SetupOptions = {}): Promise<number> {
   }
 
   const readlineInterface = createInterface({ input, output, terminal: input.isTTY === true })
-  const httpMode = argv.includes('--http')
 
   const session: SetupSession = {
     write,
@@ -212,7 +211,6 @@ export async function runSetup(options: SetupOptions = {}): Promise<number> {
           // an old file left in place would silently win over the login the user
           // just chose. They already agreed to replace it.
           configPathToDiscard: existing === null ? null : configPath,
-          httpMode,
         })
       : await finishWithPersonalAccessToken({
           readlineInterface,
@@ -222,32 +220,11 @@ export async function runSetup(options: SetupOptions = {}): Promise<number> {
           environment,
           configPath,
           canPrompt: session.canPrompt,
-          httpMode,
         })
 
     if (credentialExitCode !== 0) return credentialExitCode
 
-    if (!httpMode) {
-      // One sentence, at the end, after the working instructions. Somebody who
-      // does not care about the browser sign-in reads one extra line.
-      const { HTTP_MODE_POINTER } = await import('./setupHttp.js')
-      for (const line of HTTP_MODE_POINTER) write(line)
-      write()
-      return 0
-    }
-
-    // Only now, because the credential half has to have succeeded before there
-    // is any point starting a service that would answer with nothing behind it.
-    const { finishWithHttpMode } = await import('./setupHttp.js')
-    const portValue = readFlagValue(argv, '--port')
-    return await finishWithHttpMode({
-      write,
-      argv,
-      environment,
-      output,
-      input,
-      ...(portValue === null ? {} : { port: Number.parseInt(portValue, 10) }),
-    })
+    return 0
   } catch (error) {
     const failure = classifyError(error, { operation: 'setup' })
     write()
@@ -666,12 +643,6 @@ interface FinishWithCliSessionOptions {
   environment: Record<string, string | undefined>
   /** An older credentials file the user agreed to replace, which must not be left to win. */
   configPathToDiscard: string | null
-  /**
-   * True when `--http` was given, in which case the stdio client entry is NOT
-   * printed. Printing it and then telling the reader to remove it, which is what
-   * the HTTP block has to say, is worse than not printing it at all.
-   */
-  httpMode: boolean
 }
 
 /**
@@ -713,7 +684,7 @@ async function finishWithHomeyCliSession(options: FinishWithCliSessionOptions): 
   options.write('If "homey login" is ever run again, or a different Homey is selected with "homey select",')
   options.write('this server follows along without any further setup.')
   options.write()
-  if (!options.httpMode) printClientInstructions(options.write)
+  printClientInstructions(options.write)
   return 0
 }
 
@@ -725,8 +696,6 @@ interface FinishWithTokenOptions {
   environment: Record<string, string | undefined>
   configPath: string
   canPrompt: boolean
-  /** See `FinishWithCliSessionOptions.httpMode`. */
-  httpMode: boolean
 }
 
 async function finishWithPersonalAccessToken(options: FinishWithTokenOptions): Promise<number> {
@@ -821,7 +790,7 @@ async function finishWithPersonalAccessToken(options: FinishWithTokenOptions): P
   options.write(`Token stored: ${maskSecret(personalAccessToken)}`)
   options.write()
 
-  if (!options.httpMode) printClientInstructions(options.write)
+  printClientInstructions(options.write)
   return 0
 }
 

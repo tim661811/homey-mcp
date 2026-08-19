@@ -331,6 +331,73 @@ describe('openReconnectingConnection', () => {
     expect(loadCredentials.mock.calls.length).toBe(attemptsAfterFirst + 1)
   })
 
+  it('signs in when the user asks, without waiting out the retry window', async () => {
+    // Measured against a real server before this existed: a tool fails, the
+    // failure tells the user to run "homey login", they run it, they call
+    // "homey_authenticate" straight away, and the window hands them the same
+    // sentence telling them to run "homey login". The recovery route reads as
+    // broken to the one person following its own instructions. The window is for
+    // attempts nobody asked for; this one was asked for.
+    const connector = createConnector()
+    let clock = 0
+    let credentialsAreUsable = false
+    const loadCredentials = vi.fn(async () => {
+      if (!credentialsAreUsable) throw new HomeyMcpError('not_connected', 'No Homey credentials were found.')
+      return credentialsWithSession(`session-${connector.sessions.length + 1}`)
+    })
+
+    const connection = await openReconnectingConnection({
+      loadCredentials,
+      logger,
+      connectImplementation: connector.connect,
+      retryIntervalMs: 30_000,
+      now: () => clock,
+      startWithoutSession: true,
+    })
+    expect(connection.authenticated).toBe(false)
+
+    // The first tool call fails and starts the window.
+    await failureFrom(connection.request(readDevices(connection), 'devices.getDevices', true))
+    const attemptsAfterFirstCall = loadCredentials.mock.calls.length
+
+    // The user signs in. Two seconds later, deep inside the window.
+    credentialsAreUsable = true
+    clock += 2_000
+
+    await expect(connection.authenticate()).resolves.toMatchObject({ name: expect.any(String) })
+    expect(loadCredentials.mock.calls.length).toBe(attemptsAfterFirstCall + 1)
+    expect(connection.authenticated).toBe(true)
+  })
+
+  it('still holds the window against calls nobody asked for', async () => {
+    // The bypass above is for "homey_authenticate" alone. An ordinary tool call
+    // inside the window must not walk the address ladder again, or a Homey that
+    // is off the network is walked once per call, which is what the window is
+    // for in the first place.
+    const connector = createConnector()
+    let clock = 0
+    const loadCredentials = vi.fn(async () => {
+      throw new HomeyMcpError('not_connected', 'No Homey credentials were found.')
+    })
+
+    const connection = await openReconnectingConnection({
+      loadCredentials,
+      logger,
+      connectImplementation: connector.connect,
+      retryIntervalMs: 30_000,
+      now: () => clock,
+      startWithoutSession: true,
+    })
+
+    await failureFrom(connection.request(readDevices(connection), 'devices.getDevices', true))
+    const attemptsAfterFirstCall = loadCredentials.mock.calls.length
+
+    clock += 2_000
+    await failureFrom(connection.request(readDevices(connection), 'devices.getDevices', true))
+
+    expect(loadCredentials.mock.calls.length).toBe(attemptsAfterFirstCall)
+  })
+
   it('explains itself the same way inside the retry window as outside it', async () => {
     // The window exists so a Homey that is off the network does not get one
     // address-ladder walk per tool call. It suppresses that walk and nothing
