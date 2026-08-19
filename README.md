@@ -178,11 +178,22 @@ who is on the other end of the connection instead:
 - **On Linux** it reads the account that owns the far end of the socket out of
   `/proc/net/tcp`. A sign-in started by any account other than the one running the
   server is refused outright, page and all. You will never notice this.
-- **Where the kernel will not answer that** (macOS, or a container without
-  `/proc`) it asks for an approval code instead. The code lives in the server's own
-  state file, which is mode `0600` in your config directory, so being able to read
-  it is the proof that you are the owner. `npx homey-mcp service status` prints it.
-  Three wrong codes close the sign-in and a new one has to be started.
+- **Where the kernel will not answer that** (macOS, a container without `/proc`,
+  or WSL when the browser is on the Windows side) it asks for an approval code
+  instead. The code lives in the server's own state file, which is mode `0600` in
+  your config directory, so being able to read it is the proof that you are the
+  owner. `npx homey-mcp service status` prints it. Three wrong codes close the
+  sign-in and a new one has to be started.
+
+**WSL is the case worth spelling out**, because it looks like plain Linux and is
+not. A browser running on Windows does not reach the server directly: WSL relays
+the connection through a root-owned socket inside the Linux side, so the owner
+arrives as a different account than the one running the server. Taken at face
+value that is a stranger, and until this was measured the owner was refused with
+advice to run the server under their own account, which they already were. The
+relay hides who is behind it rather than proving it is someone else, so that case
+now asks for the approval code, the same as macOS. Run the browser inside WSL and
+you are recognised directly and are asked for nothing.
 
 Two things that still hold on a machine with more than one account. Where the
 approval code is in use, another account can still *fetch* the page, which names

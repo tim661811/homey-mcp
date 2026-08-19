@@ -7,7 +7,13 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { findPeerUid, peerIdentityOf, PEER_IDENTITY_LOCAL, readPeerIdentity } from './peerIdentity.js'
+import {
+  describesWslKernel,
+  findPeerUid,
+  peerIdentityOf,
+  PEER_IDENTITY_LOCAL,
+  readPeerIdentity,
+} from './peerIdentity.js'
 
 const HEADER =
   '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n'
@@ -89,6 +95,65 @@ describe('readPeerIdentity', () => {
     client.destroy()
     await new Promise<void>((resolve) => server.close(() => resolve()))
   })
+})
+
+describe('describesWslKernel', () => {
+  it('recognises a WSL kernel, whatever case it announces itself in', () => {
+    expect(describesWslKernel('6.6.87.1-microsoft-standard-WSL2')).toBe(true)
+    expect(describesWslKernel('4.4.0-19041-Microsoft')).toBe(true)
+  })
+
+  it('does not mistake an ordinary Linux kernel for one', () => {
+    expect(describesWslKernel('6.8.0-45-generic')).toBe(false)
+    expect(describesWslKernel('')).toBe(false)
+  })
+})
+
+describe('readPeerIdentity on WSL', () => {
+  // The bug this covers is not reachable from inside Linux: it needs a client on
+  // the Windows side of the same machine, which WSL relays through a root-owned
+  // socket. A synthetic peer row would have passed the whole time the owner was
+  // being refused, so this connects for real and skips where it cannot.
+  it('does not call the owner a second account when the connection is relayed from Windows', async () => {
+    if (process.platform !== 'linux') return
+    const { readFile } = await import('node:fs/promises')
+    const osRelease = await readFile('/proc/sys/kernel/osrelease', 'utf8').catch(() => '')
+    if (!describesWslKernel(osRelease)) return
+
+    const { execFile } = await import('node:child_process')
+    const { createServer } = await import('node:net')
+    const server = createServer()
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+    const { port } = server.address() as { port: number }
+
+    const accepted = new Promise<{ remoteAddress?: string; remotePort?: number; localPort?: number }>(
+      (resolve) => server.once('connection', (socket) => resolve(socket)),
+    )
+
+    const child = execFile('powershell.exe', [
+      '-NoProfile',
+      '-Command',
+      `try { \$c = New-Object Net.Sockets.TcpClient('127.0.0.1', ${port}); Start-Sleep -Seconds 2; \$c.Close() } catch {}`,
+    ])
+
+    const socket = await Promise.race([
+      accepted,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 15_000)),
+    ])
+
+    try {
+      // Windows interop is not guaranteed to be enabled, and a machine without it
+      // must not turn into a red test.
+      if (socket === null) return
+      expect(await readPeerIdentity(socket)).toEqual({
+        kind: 'unknown',
+        reason: expect.stringContaining('WSL'),
+      })
+    } finally {
+      child.kill()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  }, 20_000)
 })
 
 describe('peerIdentityOf', () => {

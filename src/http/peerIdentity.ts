@@ -23,6 +23,14 @@
 // has no way to test), so it lands in `unknown` and pays the approval code
 // instead. That split follows the same rule as the Windows service: ship what can
 // be verified on hardware we have, and say plainly what the other platforms get.
+//
+// WSL is a third case and it took a real sign-in to find. The file is there and
+// it answers, but a browser on the Windows side does not reach this server
+// directly: WSL relays the connection through a root-owned socket inside the VM,
+// so the owner arrives as uid 0. Read literally that is a second account, and
+// the owner was refused with advice to run the server under their own account,
+// which is what they were already doing. It is the kernel naming the relay, not
+// naming the caller, so it belongs with macOS in `unknown`.
 
 import { readFile } from 'node:fs/promises'
 import { isIPv4 } from 'node:net'
@@ -50,6 +58,33 @@ export interface PeerSocketAddress {
 export type ReadPeerIdentity = (socket: PeerSocketAddress) => Promise<PeerIdentity>
 
 const PROC_NET_TCP = '/proc/net/tcp'
+const OS_RELEASE = '/proc/sys/kernel/osrelease'
+
+/**
+ * The uid the WSL localhost relay runs as. Anything opened on the Windows side
+ * against a port inside the VM arrives on a socket owned by it.
+ */
+const WSL_RELAY_UID = 0
+
+/**
+ * Whether a `/proc/sys/kernel/osrelease` line describes a WSL kernel.
+ *
+ * Exported and pure so the suite can assert both answers without the machine
+ * running it having to be, or not be, WSL.
+ */
+export function describesWslKernel(osRelease: string): boolean {
+  return /microsoft/i.test(osRelease)
+}
+
+let wslKernelCheck: Promise<boolean> | null = null
+
+/** Read once: the kernel does not change under a running process. */
+async function runsUnderWsl(): Promise<boolean> {
+  wslKernelCheck ??= readFile(OS_RELEASE, 'utf8')
+    .then(describesWslKernel)
+    .catch(() => false)
+  return await wslKernelCheck
+}
 
 /**
  * The uid that owns the far end, or null when this file does not describe the
@@ -136,7 +171,26 @@ export const readPeerIdentity: ReadPeerIdentity = async (socket: PeerSocketAddre
     return { kind: 'unknown', reason: 'no socket in /proc/net/tcp matched this connection' }
   }
 
-  return uid === ownUid ? { kind: 'same_user' } : { kind: 'other_user', uid }
+  if (uid === ownUid) return { kind: 'same_user' }
+
+  // WSL relays everything that starts on the Windows side through a root-owned
+  // socket inside the VM, so the owner's own browser arrives here as uid 0 and
+  // reads as a second account. That is the kernel declining to answer rather
+  // than answering "someone else", and the difference decides whether the owner
+  // can sign in at all: as `other_user` the request is refused outright and the
+  // person is told to run the server under their own account, which is exactly
+  // what they are already doing. `unknown` puts it on the approval code
+  // instead, the same toll macOS pays, and that code is still a secret only the
+  // owner's account can read. A second Linux account connecting directly still
+  // carries its own uid and is still refused.
+  if (uid === WSL_RELAY_UID && (await runsUnderWsl())) {
+    return {
+      kind: 'unknown',
+      reason: 'this connection was relayed from the Windows side of WSL, which hides the account behind it',
+    }
+  }
+
+  return { kind: 'other_user', uid }
 }
 
 /**
