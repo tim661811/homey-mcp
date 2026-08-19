@@ -27,6 +27,7 @@ import type { ServerContext } from '../context.js'
 import {
   DESTRUCTIVE_TOOL_ANNOTATIONS,
   OVERWRITE_TOOL_ANNOTATIONS,
+  WRITE_TOOL_ANNOTATIONS,
   READ_ONLY_TOOL_ANNOTATIONS,
 } from '../createServer.js'
 import { failureResult, invalidRequestResult } from '../errors.js'
@@ -63,7 +64,12 @@ interface DeviceManagers {
       value: boolean | number | string
     }): Promise<unknown>
   }
-  logic: { updateVariable(options: { id: string; variable: { value: boolean | number | string } }): Promise<unknown> }
+  logic: {
+    updateVariable(options: { id: string; variable: { value: boolean | number | string } }): Promise<unknown>
+    createVariable(options: {
+      variable: { name: string; type: string; value: boolean | number | string }
+    }): Promise<unknown>
+  }
   flow: {
     triggerFlow(options: { id: string }): Promise<unknown>
     triggerAdvancedFlow(options: { id: string }): Promise<unknown>
@@ -189,14 +195,25 @@ function registerDeviceGet(server: McpServer, context: ServerContext): void {
         'homey_device_set_capability: several capabilities are a 0..1 fraction despite reading as a percentage.',
       ].join(' '),
       inputSchema: {
-        device: z.string().describe('Device id or device name.'),
+        device: z.string().optional().describe('Device id or device name.'),
+        deviceId: z
+          .string()
+          .optional()
+          .describe('The same thing as "device", under the name homey_devices_search reports it as. Send either one.'),
       },
       annotations: READ_ONLY_TOOL_ANNOTATIONS,
     },
     async (args) => {
       try {
-        const resolution = await context.cache.resolveDevice(args.device)
-        const resolved = await resolveSingle(context, resolution, 'device', args.device, describeDevice)
+        const reference = args.device ?? args.deviceId
+        if (reference === undefined || reference.trim() === '') {
+          return invalidRequestResult('Name the device to read, as "device" or as "deviceId".', {
+            hint: 'Both take an id or an exact name. homey_devices_search reports the id as "id".',
+          })
+        }
+
+        const resolution = await context.cache.resolveDevice(reference)
+        const resolved = await resolveSingle(context, resolution, 'device', reference, describeDevice)
         if ('failure' in resolved) return resolved.failure
 
         const device = resolved.match
@@ -382,6 +399,70 @@ function registerVariableSet(server: McpServer, context: ServerContext): void {
         )
       } catch (error) {
         return failureResult(error, { operation: 'homey_variable_set', logger: context.logger })
+      }
+    },
+  )
+
+  server.registerTool(
+    'homey_variable_create',
+    {
+      title: 'Create a Homey logic variable',
+      description: [
+        'Creates a new logic variable. Use this when an automation needs to remember something between runs, or to hand a value from one flow to another.',
+        'A logic variable is the better choice over a tag published from a script whenever a person may want to see or change the value: logic variables appear in the Homey app, can be set by hand, and are readable here through homey_home_overview.',
+        'Exactly three types exist: string, number and boolean. The type is fixed once created and the value must match it.',
+        'It is created with the value given, so pick a starting value the house can live with: flows may read it immediately.',
+        'Creating something the owner did not ask for clutters their Homey, so confirm is required.',
+      ].join(' '),
+      inputSchema: {
+        name: z.string().min(1).describe('What it is called, as shown in the Homey app. Names are not unique, so check homey_home_overview first.'),
+        type: z.enum(['string', 'number', 'boolean']).describe('Fixed at creation and cannot be changed afterwards.'),
+        value: z.union([z.boolean(), z.number(), z.string()]).describe('The starting value, matching the type.'),
+        confirm: z
+          .boolean()
+          .describe('Must be true. Confirms the owner asked for a new variable on their Homey; do not set it on their behalf.'),
+      },
+      annotations: WRITE_TOOL_ANNOTATIONS,
+    },
+    async (args) => {
+      try {
+        assertLogicVariablesSupported(context)
+
+        if (args.confirm !== true) {
+          return invalidRequestResult('Creating a logic variable needs confirm: true.', {
+            hint: 'Ask the owner whether they want a new variable on their Homey, and say what it is for. homey_variable_set writes to one that already exists.',
+          })
+        }
+
+        if (typeof args.value !== args.type) {
+          return invalidRequestResult(
+            `A ${args.type} variable needs a ${args.type} value, and ${JSON.stringify(args.value)} is a ${typeof args.value}.`,
+            { hint: 'The type is fixed at creation, so a mismatch here has to be fixed by deleting and recreating it in the Homey app.' },
+          )
+        }
+
+        const managers = context.connection.api as DeviceManagers
+        const created = await context.connection.request(
+          () => managers.logic.createVariable({ variable: { name: args.name, type: args.type, value: args.value } }),
+          'logic.createVariable',
+        )
+        context.cache.invalidate('logicVariables')
+
+        const record = (created ?? {}) as Record<string, unknown>
+        const id = typeof record['id'] === 'string' ? record['id'] : null
+
+        return successResult(
+          `Created the ${args.type} variable "${args.name}" with the value ${formatCapabilityValue(args.value)}. It is visible in the Homey app and flows can read it now.`,
+          {
+            ok: true,
+            variableId: id,
+            variableName: args.name,
+            type: args.type,
+            value: args.value,
+          },
+        )
+      } catch (error) {
+        return failureResult(error, { operation: 'homey_variable_create', logger: context.logger })
       }
     },
   )

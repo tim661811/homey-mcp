@@ -238,7 +238,12 @@ describe('buildServerInstructions', () => {
   it('announces outdoor weather when the probe found it', () => {
     const instructions = build(withProbes({ weather: outcome('available', 'GET /api/manager/weather/weather') }))
 
-    expect(instructions).toContain('Outdoor weather (the reading Homey itself uses for the home\'s location): available.')
+    // 'available' on its own was misleading and cost a real session a detour:
+    // it is true of the read and says nothing about flow cards, and this hub has
+    // 797 of those with not one weather card among them.
+    expect(instructions).toContain('available to READ')
+    expect(instructions).toContain('homey_flowcards_search')
+    expect(instructions).toContain('HomeyScript')
   })
 
   it('says outdoors is unavailable rather than promising it on a hub that has no weather route', () => {

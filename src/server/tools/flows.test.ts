@@ -316,6 +316,7 @@ describe('registration', () => {
       'homey_flow_create',
       'homey_flow_delete',
       'homey_flow_get',
+      'homey_flow_tokens',
       'homey_flow_update',
       'homey_flow_validate',
       'homey_flows_list',

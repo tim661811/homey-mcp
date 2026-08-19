@@ -58,6 +58,15 @@ export interface ValidationContext {
   zoneIds: ReadonlySet<string>
   /** Live folder ids, so a stale folder is caught before it silently resets to the root. */
   folderIds?: ReadonlySet<string>
+  /**
+   * Every token id this hub publishes, from `listFlowTokens`.
+   *
+   * Optional, and absent means NOT CHECKED rather than "none exist". An empty
+   * set would mark every qualified reference in the flow as broken, which is the
+   * same failure as not checking at all with the sign reversed. The caller says
+   * which of the two happened.
+   */
+  tokenIds?: ReadonlySet<string>
   dialect: HomeyDialect
 }
 
@@ -425,6 +434,27 @@ function validateStandardFlowTokens(
                 : `publishes only: ${publishedTokenIds.join(', ')}`
             }. The hub stores the flow anyway, reports it as healthy, and the Homey app shows the card as "Unavailable".`,
             suggestion: `The short [[${reference.tokenId}]] form can only name a value the flow's own trigger publishes. A value from anywhere else is written [[<ownerUri>|<tokenId>]], as in [[homey:device:<id>|measure_temperature]]. Call homey_flowcard_describe on ${triggerDescriptor.id} to see what this trigger offers, or pick a trigger that publishes what you need.`,
+          })
+        }
+        continue
+      }
+
+      // A qualified reference, [[<ownerUri>|<tokenId>]]. This went unchecked
+      // entirely while the tool's description promised that "every device and
+      // token reference resolves", so a flow naming a tag that had never existed
+      // validated clean. An agent reading that answer would tell its user the
+      // reference was verified.
+      //
+      // The addressable id is the two halves joined by a colon, which is what
+      // the hub's own token catalogue keys on.
+      if (reference.kind === 'global' && context.tokenIds !== undefined && reference.ownerUri !== null && reference.tokenId !== null) {
+        const tokenId = `${reference.ownerUri}:${reference.tokenId}`
+        if (!context.tokenIds.has(tokenId)) {
+          problems.push({
+            path: argumentPath,
+            problem: `${reference.raw} names a value this Homey does not publish. Nothing is called "${tokenId}". The hub stores the flow anyway and the Homey app shows the card as "Unavailable".`,
+            suggestion:
+              'List what does exist with homey_flow_tokens and use the id it reports. A device value is [[homey:device:<id>|<capability>]]; a tag an app publishes is [[homey:app:<appId>|<tagName>]], and the app has to have published it at least once.',
           })
         }
         continue

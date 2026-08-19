@@ -124,6 +124,7 @@ interface DeviceTestHarness {
   context: ServerContext
   capabilityWrites: CapabilityWrite[]
   variableWrites: Array<{ id: string; value: boolean | number | string }>
+  variablesCreated: Array<{ name: string; type: string; value: unknown }>
   flowStarts: Array<{ id: string; kind: string }>
   invalidatedCollections: Array<string | undefined>
   tools: Map<string, RegisteredTestTool>
@@ -145,6 +146,7 @@ const CAPABILITY_REGISTRY: CapabilityRegistry = {
 function createHarness(options: HarnessOptions = {}): DeviceTestHarness {
   const capabilityWrites: CapabilityWrite[] = []
   const variableWrites: Array<{ id: string; value: boolean | number | string }> = []
+  const variablesCreated: Array<{ name: string; type: string; value: unknown }> = []
   const flowStarts: Array<{ id: string; kind: string }> = []
   const invalidatedCollections: Array<string | undefined> = []
 
@@ -175,6 +177,10 @@ function createHarness(options: HarnessOptions = {}): DeviceTestHarness {
       updateVariable: async ({ id, variable }: { id: string; variable: { value: boolean | number | string } }) => {
         variableWrites.push({ id, value: variable.value })
         return {}
+      },
+      createVariable: async ({ variable }: { variable: { name: string; type: string; value: boolean | number | string } }) => {
+        variablesCreated.push(variable)
+        return { id: 'created-variable-id', ...variable }
       },
     },
     insights: { getLogs: options.getInsightsLogs ?? (async () => INSIGHTS_LOG_CATALOGUE) },
@@ -229,7 +235,7 @@ function createHarness(options: HarnessOptions = {}): DeviceTestHarness {
 
   registerDevicesTools(server, context)
 
-  return { context, capabilityWrites, variableWrites, flowStarts, invalidatedCollections, tools }
+  return { context, capabilityWrites, variablesCreated, variableWrites, flowStarts, invalidatedCollections, tools }
 }
 
 function takeTool(harness: DeviceTestHarness, name: string): RegisteredTestTool {
@@ -271,6 +277,7 @@ describe('homey_devices_search', () => {
       'homey_device_set_capability',
       'homey_devices_search',
       'homey_flow_start',
+      'homey_variable_create',
       'homey_variable_set',
     ])
   })
@@ -408,6 +415,27 @@ describe('homey_devices_search', () => {
 // ---------------------------------------------------------------------------
 
 describe('homey_device_get', () => {
+  it('takes the reference under the name homey_devices_search reports it as', async () => {
+    // Search answers with "id", so that is the name a caller is holding when
+    // it arrives here. Guessing "deviceId" cost a round trip in a real session,
+    // and a round trip for a synonym is a round trip for nothing.
+    const harness = createHarness()
+
+    const byDevice = await takeTool(harness, 'homey_device_get').handler({ device: 'Bedroom radiator' })
+    const byDeviceId = await takeTool(harness, 'homey_device_get').handler({ deviceId: 'Bedroom radiator' })
+
+    expect(byDeviceId.isError).toBeFalsy()
+    expect(structuredOf(byDeviceId)).toEqual(structuredOf(byDevice))
+  })
+
+  it('says which argument to send when neither is given', async () => {
+    const harness = createHarness()
+
+    const result = await takeTool(harness, 'homey_device_get').handler({})
+
+    expect(result.isError).toBe(true)
+    expect(JSON.stringify(result)).toContain('deviceId')
+  })
   it('returns the full capability descriptor including the range to set within', async () => {
     const harness = createHarness()
     const result = await takeTool(harness, 'homey_device_get').handler({ device: 'Bedroom radiator' })
@@ -888,5 +916,61 @@ describe('homey_flow_start', () => {
     expect(harness.flowStarts).toHaveLength(1)
     expect(result.content[0]?.type === 'text' && result.content[0].text).toContain('disabled')
     expect(structuredOf(result)['enabled']).toBe(false)
+  })
+})
+
+describe('homey_variable_create', () => {
+  // A logic variable is the answer when a person may want to see or change the
+  // value, and its absence pushed a real design toward script tags instead,
+  // which are invisible in the Homey app.
+  it('creates one when the owner has confirmed', async () => {
+    const harness = createHarness()
+
+    const result = await takeTool(harness, 'homey_variable_create').handler({
+      name: 'Airing advice',
+      type: 'string',
+      value: 'KIER',
+      confirm: true,
+    })
+
+    expect(result.isError).toBeFalsy()
+    expect(harness.variablesCreated).toEqual([{ name: 'Airing advice', type: 'string', value: 'KIER' }])
+    expect(structuredOf(result)['variableId']).toBe('created-variable-id')
+  })
+
+  it('creates nothing without an explicit confirm', async () => {
+    const harness = createHarness()
+
+    const result = await takeTool(harness, 'homey_variable_create').handler({
+      name: 'Airing advice',
+      type: 'string',
+      value: 'KIER',
+      confirm: false,
+    })
+
+    expect(result.isError).toBe(true)
+    expect(harness.variablesCreated).toEqual([])
+  })
+
+  it('refuses a value that does not match the type, which cannot be changed later', async () => {
+    const harness = createHarness()
+
+    const result = await takeTool(harness, 'homey_variable_create').handler({
+      name: 'Window open',
+      type: 'boolean',
+      value: 'yes',
+      confirm: true,
+    })
+
+    expect(result.isError).toBe(true)
+    expect(harness.variablesCreated).toEqual([])
+  })
+
+  it('drops the cached variable list, so the new one is visible at once', async () => {
+    const harness = createHarness()
+
+    await takeTool(harness, 'homey_variable_create').handler({ name: 'Counter', type: 'number', value: 0, confirm: true })
+
+    expect(harness.invalidatedCollections).toContain('logicVariables')
   })
 })

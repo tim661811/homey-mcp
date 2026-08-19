@@ -87,6 +87,47 @@ async function contextFor(overrides: Partial<ValidationContext> = {}): Promise<V
   }
 }
 
+describe('a qualified token reference', () => {
+  // Reported from a real session: the tool's description promised that "every
+  // device and token reference resolves", and a flow naming a tag that had never
+  // existed came back valid with no problems at all. An agent reading that told
+  // its user the reference had been verified. Nothing had been checked: the
+  // qualified form fell through every branch.
+  it('is a problem when this Homey publishes nothing by that name', async () => {
+    const flow = soundFlow()
+    flow.actions[0]!.args = { text: 'Advice: [[homey:app:com.athom.homeyscript|no_such_tag_at_all]]' }
+
+    const problems = validateFlow(flow, await contextFor({ tokenIds: new Set(['homey:app:com.athom.homeyscript|other']) }))
+
+    expect(problemsAt(problems, 'actions[0].args.text')).toHaveLength(1)
+    expect(JSON.stringify(problems)).toContain('no_such_tag_at_all')
+  })
+
+  it('is accepted when the hub does publish it', async () => {
+    const flow = soundFlow()
+    flow.actions[0]!.args = { text: 'Advice: [[homey:app:com.athom.homeyscript|raamadvies]]' }
+
+    const problems = validateFlow(
+      flow,
+      await contextFor({ tokenIds: new Set(['homey:app:com.athom.homeyscript:raamadvies']) }),
+    )
+
+    expect(problemsAt(problems, 'actions[0].args.text')).toHaveLength(0)
+  })
+
+  it('is left alone entirely when the catalogue could not be read', async () => {
+    // The opposite failure, and just as bad: an empty or missing catalogue must
+    // not mark every reference in the flow as broken. Absent means not checked.
+    const flow = soundFlow()
+    flow.actions[0]!.args = { text: 'Advice: [[homey:app:com.athom.homeyscript|anything]]' }
+
+    const context = await contextFor()
+    delete (context as { tokenIds?: unknown }).tokenIds
+
+    expect(problemsAt(validateFlow(flow, context), 'actions[0].args.text')).toHaveLength(0)
+  })
+})
+
 function soundFlow(): CanonicalFlow {
   return {
     name: 'Warn when the attic door opens',

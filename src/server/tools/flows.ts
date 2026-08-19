@@ -26,6 +26,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 
 import { normaliseForComparison } from '../../homey/cache.js'
 import { HomeyMcpError, classifyError } from '../../homey/errors.js'
+import { listFlowTokens, readFlowTokenIds } from '../../homey/flowTokens.js'
 import type { FlowCardKind, FlowCardLookup, FlowSummary } from '../../homey/types.js'
 import type { ServerContext } from '../context.js'
 import {
@@ -35,7 +36,7 @@ import {
   WRITE_TOOL_ANNOTATIONS,
 } from '../createServer.js'
 import { failureResult, invalidRequestResult } from '../errors.js'
-import { successResult } from '../render.js'
+import { renderTextBlock, successResult } from '../render.js'
 import type { CanonicalCard, CanonicalFlow, FlowDifference, StoredCanonicalFlow } from '../../flow/model.js'
 import { diffFlows, flowDeepLink, fromWire, storedFlowFromWire, toLibraryPayload } from '../../flow/model.js'
 import { normaliseFlow } from '../../flow/normalise.js'
@@ -165,6 +166,66 @@ export function registerFlowTools(server: McpServer, context: ServerContext): vo
   const flowsCreatedHere = createdFlowsFor(context)
 
   server.registerTool(
+    'homey_flow_tokens',
+    {
+      title: 'List the values flows can use',
+      description: [
+        'Lists every token on this Homey with the value it holds right now. A token is anything a flow card can drop into a text argument: a device capability, a logic variable, or a tag published by an app.',
+        'This is how to read back a tag a script has written, which is otherwise only visible in the Homey app.',
+        'The "id" it reports is what a reference must name: [[<ownerUri>|<ownerId>]] in a card argument. Use it with homey_flow_validate, which checks references against exactly this list.',
+      ].join(' '),
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
+      inputSchema: {
+        query: z.string().optional().describe('Part of the id, title or owner. Leave out for all of them.'),
+        limit: z.number().int().min(1).max(500).optional().describe('How many to return. Defaults to 100.'),
+      },
+    },
+    async (input): Promise<CallToolResult> => {
+      try {
+        const all = await listFlowTokens(context.connection)
+        const query = input.query === undefined ? null : normaliseForComparison(input.query)
+        const matched = all.filter(
+          (token) =>
+            query === null ||
+            normaliseForComparison(`${token.id} ${token.title ?? ''} ${token.ownerUri ?? ''}`).includes(query),
+        )
+
+        const limit = input.limit ?? 100
+        const shown = matched.slice(0, limit)
+
+        return successResult(
+          shown.length === 0
+            ? 'No token on this Homey matches that.'
+            : renderTextBlock([
+                {
+                  heading: `${shown.length} of ${matched.length} tokens`,
+                  lines: shown.map(
+                    (token) => `${token.title ?? token.ownerId ?? token.id} (${token.type ?? 'unknown type'}) = ${describeTokenValue(token.value)}  id: ${token.id}`,
+                  ),
+                },
+              ]),
+          {
+            ok: true,
+            total: all.length,
+            matched: matched.length,
+            truncated: matched.length > shown.length,
+            tokens: shown.map((token) => ({
+              id: token.id,
+              ownerUri: token.ownerUri,
+              ownerId: token.ownerId,
+              title: token.title,
+              type: token.type,
+              value: token.value,
+            })),
+          },
+        )
+      } catch (error) {
+        return failureResult(error, { operation: 'list flow tokens', logger: context.logger })
+      }
+    },
+  )
+
+  server.registerTool(
     'homey_flows_list',
     {
       title: 'List Homey flows',
@@ -287,8 +348,9 @@ export function registerFlowTools(server: McpServer, context: ServerContext): vo
     {
       title: 'Check a flow before building it',
       description: [
-        'Checks a flow against this Homey without writing anything and without running anything: every card exists and is the right kind, every argument is named and typed correctly, and every device and token reference resolves.',
-        'Worth calling first, because the Homey itself accepts almost anything. A flow naming a card that does not exist saves and shows as "NO CARD"; a token written with a colon instead of a pipe saves and shows as "Unavailable". Neither reports an error.',
+        'Checks a flow against this Homey without writing anything and without running anything: every card exists and is the right kind, every argument is named and typed correctly, every device and zone it names is still here, and every [[token]] reference names a value this Homey actually publishes, whether that is a device capability, a logic variable or a tag from an app.',
+        'Worth calling first, because the Homey itself accepts almost anything. A flow naming a card that does not exist saves and shows as "NO CARD"; a token written with a colon instead of a pipe, or naming a tag that was never published, saves and shows as "Unavailable". Neither reports an error.',
+        'The one thing it cannot judge is whether the flow does what the owner meant.',
       ].join(' '),
       inputSchema: {
         name: z.string().describe('What the flow is called.'),
@@ -842,12 +904,16 @@ async function buildValidationContext(context: ServerContext): Promise<Validatio
   const devices = await context.cache.getDevices()
   const zones = await context.cache.getZones()
   const folders = await context.cache.getFlowFolders()
+  // Null when the catalogue could not be read, and then `tokenIds` is left off
+  // entirely so validation skips the check instead of failing every reference.
+  const tokenIds = await readFlowTokenIds(context.connection)
 
   return {
     cards,
     deviceIds: new Set(devices.all.map((device) => device.id)),
     zoneIds: new Set(zones.all.map((zone) => zone.id)),
     folderIds: new Set(folders.all.map((folder) => folder.id)),
+    ...(tokenIds === null ? {} : { tokenIds }),
     dialect: context.connection.dialect,
   }
 }
@@ -1288,4 +1354,18 @@ function readIdentifier(created: unknown): string | null {
   if (created === null || typeof created !== 'object') return null
   const id = (created as Record<string, unknown>)['id']
   return typeof id === 'string' && id !== '' ? id : null
+}
+
+/**
+ * A token value, short enough to read in a list.
+ *
+ * An image token's value is not text and a long string tag is a paragraph, so
+ * neither belongs in a one-line summary. The structured content carries the
+ * whole value either way, so nothing is lost by trimming here.
+ */
+function describeTokenValue(value: unknown): string {
+  if (value === undefined || value === null) return 'not set'
+  if (typeof value === 'string') return value.length > 80 ? `"${value.slice(0, 77)}..."` : `"${value}"`
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  return '(not a plain value)'
 }

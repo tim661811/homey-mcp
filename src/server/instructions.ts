@@ -93,11 +93,7 @@ export function buildServerInstructions(options: BuildServerInstructionsOptions)
         energyReports,
         describeEnergyFallback(insights),
       ),
-      renderCapabilityLine(
-        'Outdoor weather (the reading Homey itself uses for the home\'s location)',
-        weather,
-        'nothing here can say what it is like outside, so compare rooms against each other rather than against outdoors',
-      ),
+      renderWeatherLine(weather),
       renderMoodsLine(moods),
     ].join('\n'),
   )
@@ -329,6 +325,35 @@ function describeEnergyFallback(insights: CapabilityOutlook): string {
  * positive branch promised something no tool keeps. What is true either way is
  * that the only route to a mood here is a flow card.
  */
+/**
+ * Outdoor weather, and the difference between reading it and building with it.
+ *
+ * "available" alone cost a real session a detour. It is true of the READ: this
+ * server can fetch what it is like outside. It says nothing about flow cards,
+ * and a hub can have none at all. Measured on a Homey Pro (Early 2019): 797 flow
+ * cards, not one of them weather. So a model designs a flow around outdoor
+ * temperature, searches by name, by owner and by `homey:manager:weather`, finds
+ * nothing three times, and only then works out that the two are separate
+ * questions. Naming the distinction here costs one clause.
+ *
+ * Kept as a caveat rather than a count: knowing the real number needs the flow
+ * card catalogue, which is the largest request this server makes, and paying for
+ * it on every start to sharpen one sentence is the wrong trade.
+ */
+function renderWeatherLine(outlook: CapabilityOutlook): string {
+  const feature = "Outdoor weather (the reading Homey itself uses for the home's location)"
+  const consequence =
+    'nothing here can say what it is like outside, so compare rooms against each other rather than against outdoors'
+
+  if (outlook !== 'available') return renderCapabilityLine(feature, outlook, consequence)
+
+  return [
+    `- ${feature}: available to READ with "homey_weather".`,
+    'That is separate from building with it: a hub can have no weather flow cards at all, and several do not.',
+    'Before designing a flow around what it is like outside, search for a card with "homey_flowcards_search"; if there is none, read the weather inside a HomeyScript script and let the script decide, then let the flow act on what it returns.',
+  ].join(' ')
+}
+
 function renderMoodsLine(outlook: CapabilityOutlook): string {
   if (outlook === 'available') {
     return '- Moods (a saved set of device states): this hub has them, but this server has no mood tool, so a mood cannot be read or set directly. A mood can still be set from inside a flow: search for a mood card with "homey_flowcards_search" and build it into a flow like any other card.'

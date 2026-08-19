@@ -142,7 +142,9 @@ describe('createServer', () => {
       'homey_device_get',
       'homey_device_set_capability',
       'homey_variable_set',
+      'homey_variable_create',
       'homey_flow_start',
+      'homey_flow_tokens',
       'homey_flows_list',
       'homey_flow_get',
       'homey_flow_validate',
@@ -201,9 +203,10 @@ describe('createServer', () => {
     // wrong place.
     const controlStart = names.indexOf('homey_device_set_capability')
     expect(controlStart).toBeGreaterThan(-1)
-    expect(names.slice(controlStart, controlStart + 3)).toEqual([
+    expect(names.slice(controlStart, controlStart + 4)).toEqual([
       'homey_device_set_capability',
       'homey_variable_set',
+      'homey_variable_create',
       'homey_flow_start',
     ])
     expect(names.indexOf('homey_flows_list')).toBeGreaterThan(names.indexOf('homey_flow_start'))
