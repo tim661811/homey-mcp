@@ -100,6 +100,33 @@ describe('buildServerInstructions', () => {
   // The instructions are the one place a model reads before any tool
   // description, so they are where a value crossing from one tool into another
   // has to be named. Each line below existed as a broken handoff first.
+  describe('writing a script', () => {
+    it('tells the model to take what varies as an argument rather than baking in a device', () => {
+      // A requirement from the user rather than a nicety: a script with a device
+      // id in it works once, for one house, and stops working when that device
+      // is replaced. Said here because a model reads the instructions before it
+      // reads any tool description.
+      const instructions = build()
+
+      expect(instructions).toContain('args[0]')
+      expect(instructions).toContain('zone and capability')
+      expect(instructions).toMatch(/reusable/i)
+    })
+
+    it('says the app may be absent and is never installed without a yes', () => {
+      const instructions = build()
+
+      expect(instructions).toContain('may not be installed')
+      expect(instructions).toContain('without the user saying yes')
+    })
+
+    it('says to run a script after writing it', () => {
+      const instructions = build()
+
+      expect(instructions).toContain('homey_script_run')
+    })
+  })
+
   describe('the handoffs between tools', () => {
     it('says a card id keeps the name cardId all the way through authoring', () => {
       const instructions = build()

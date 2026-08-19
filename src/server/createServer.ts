@@ -208,12 +208,13 @@ async function registerToolModules(server: McpServer, context: ServerContext): P
     registered.push(name)
   }
 
-  const [authenticate, overview, devices, flows, flowCards, insights, energy, weather, doctor] = await Promise.all([
+  const [authenticate, overview, devices, flows, flowCards, scripts, insights, energy, weather, doctor] = await Promise.all([
     import('./tools/authenticate.js'),
     import('./tools/overview.js'),
     import('./tools/devices.js'),
     import('./tools/flows.js'),
     import('./tools/flowcards.js'),
+    import('./tools/scripts.js'),
     import('./tools/insights.js'),
     import('./tools/energy.js'),
     import('./tools/weather.js'),
@@ -253,6 +254,14 @@ async function registerToolModules(server: McpServer, context: ServerContext): P
   } else {
     context.logger.info('Advanced flow tools were not registered: this Homey does not offer Advanced Flows')
   }
+
+  // Registered whatever the hub says, unlike the advanced flow tools above,
+  // and the difference is that HomeyScript is an app rather than hardware. The
+  // advanced flow verdict is about what this Homey can never do; HomeyScript can
+  // be installed while this server runs, so deciding at startup would hide
+  // working tools from anyone who installed it afterwards. Each tool checks for
+  // the app when it is called, and offers to install it.
+  register('scripts', scripts.registerScriptTools)
 
   register('insights', insights.registerInsightsTools)
   register('energy', energy.registerEnergyTools)

@@ -160,6 +160,23 @@ export function buildServerInstructions(options: BuildServerInstructionsOptions)
     ].join('\n'),
   )
 
+  // HomeyScript is the one thing here that may simply not be installed, and it is
+  // also the one place a model can write code that outlives the conversation. So
+  // the shape that code should take is said here rather than only in the tool
+  // descriptions: a script with a device id baked into it works once, for one
+  // house, and stops working the day that device is replaced.
+  sections.push(
+    [
+      'Writing a script, when a flow card cannot express the logic:',
+      '- HomeyScript runs JavaScript on the Homey itself. Reach for it when the logic needs arithmetic, a loop, a lookup across several devices or a decision no card offers. A flow still starts it, so the script is a step inside an automation rather than a replacement for one.',
+      '- It is an app, so it may not be installed. The script tools check, offer to install it, and install nothing without the user saying yes.',
+      '- Write scripts to be reusable, and prefer that over writing the shortest thing that works. Take what varies as an argument: the HomeyScript flow card passes text into the script as "args[0]", so one script serves several flows and several rooms.',
+      '- Look a device up by what it is, by zone and capability, rather than by an id pasted into the code. A hard-coded id ties the script to these exact devices. "homey_script_create" and "homey_script_update" say so when they see one; it is a warning rather than a refusal, because sometimes there is genuinely no better way. When you take that route, say why in a comment in the script.',
+      '- Prefer answering a question over acting. A script that returns whether the windows should be opened can be reused and tested; one that also opens them cannot. Return the value, and let the flow act on it.',
+      '- Run it with "homey_script_run" after writing it. It reports what the script returned, and reports a script that threw with the line it happened on, so that is also how a script gets debugged. A script nobody has run is a script nobody has checked.',
+    ].join('\n'),
+  )
+
   // Written once here rather than in fifteen tool descriptions, because every
   // line below is about a value crossing FROM one tool INTO another and neither
   // description is the place a reader looks for that. Each of these was a
