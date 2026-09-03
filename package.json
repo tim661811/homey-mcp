@@ -48,7 +48,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
-    "homey-api": "3.19.2",
+    "homey-api": "3.19.3",
     "zod": "4.4.3"
   },
   "devDependencies": {
